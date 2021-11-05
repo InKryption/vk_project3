@@ -1,0 +1,9 @@
+[submodule "dependencies/mach-glfw"]
+	path = dependencies/mach-glfw
+	url = https://github.com/hexops/mach-glfw.git
+[submodule "dependencies/vulkan-zig"]
+	path = dependencies/vulkan-zig
+	url = https://github.com/Snektron/vulkan-zig.git
+[submodule "dependencies/Vulkan-Docs"]
+	path = dependencies/Vulkan-Docs
+	url = https://github.com/KhronosGroup/Vulkan-Docs.git

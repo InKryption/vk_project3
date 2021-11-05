@@ -1,0 +1,15 @@
+{
+    "configurations": [
+    {
+        "name": "(Windows) Launch",
+        "type": "cppvsdbg",
+        "request": "launch",
+        "program": "${workspaceFolder}/zig-out/bin/${workspaceFolderBasename}.exe",
+        "args": [],
+        "stopAtEntry": true,
+        "cwd": "${workspaceFolder}",
+        "environment": [],
+        "preLaunchTask": "build",
+    }
+    ]
+}
