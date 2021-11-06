@@ -3,14 +3,25 @@ const vulkan_zig = @import("dependencies/vulkan-zig/generator/index.zig");
 const mach_glfw = @import("dependencies/mach-glfw/build.zig");
 
 pub fn build(b: *std.build.Builder) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        .default_target = std.zig.CrossTarget {},
+    });
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("vk_project3", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
-
+    
+    //exe.addLibPath("C:/VulkanSDK/1.2.176.1/Lib/");
+    
+    //exe.linkLibC();
+    //exe.linkSystemLibrary("uuid");
+    //exe.linkSystemLibrary("MSVCRT");
+    //exe.linkSystemLibrary("gdi32");
+    //exe.linkSystemLibrary("vulkan-1");
+    
+    
     mach_glfw.link(b, exe, .{});
     exe.addPackagePath("mach-glfw", "dependencies/mach-glfw/src/main.zig");
 

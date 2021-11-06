@@ -26,6 +26,9 @@ pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }) {};
     defer _ = gpa_state.deinit();
     
+    var aa_state = std.heap.ArenaAllocator.init(&gpa_state.allocator);
+    defer aa_state.deinit();
+    
     const allocator_main: *mem.Allocator = &gpa_state.allocator;
     _ = allocator_main;
     
@@ -37,9 +40,31 @@ pub fn main() !void {
     const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
     defer window.destroy();
     
-    const vk_base = try VulkanBase.init(@ptrCast(fn(vk.Instance, [*:0]const u8) callconv(.C) ?glfw.VKProc, glfw.getInstanceProcAddress), .{}, null, .{});
+    const vk_base = try VulkanBase.init(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress), .{}, null, .{});
     defer vk_base.deinit(null);
     
+    const selected_physical_device: vk.PhysicalDevice = selected_physical_device: {
+        var selected_idx: usize = 0;
+        
+        const all_physical_devices: []const vk.PhysicalDevice = try vk_base.enumeratePhysicalDevicesAlloc(allocator_main);
+        defer allocator_main.free(all_physical_devices);
+        
+        if (all_physical_devices.len == 0) return error.NoSupportedVulkanPhysicalDevices;
+        if (all_physical_devices.len == 1) break :selected_physical_device all_physical_devices[0];
+        
+        break :selected_physical_device all_physical_devices[selected_idx];
+    };
+    
+    var timer = try time.Timer.start();
+    while (!window.shouldClose()) {
+        glfw.pollEvents() catch continue;
+        if (timer.read() < 16 * time.ns_per_ms)
+            continue
+        else {
+            timer.reset();
+        }
+        
+    }
 }
 
 const VulkanBase = struct {
@@ -48,7 +73,7 @@ const VulkanBase = struct {
     dispatch_instance: DispatchInstance,
     instance: vk.Instance,
     
-    pub const DispatchBase = vk.BaseWrapper(.{
+    pub const DispatchBase = vk.BaseWrapper(&.{
         .createInstance,
         .getInstanceProcAddr,
         .enumerateInstanceVersion,
@@ -56,9 +81,17 @@ const VulkanBase = struct {
         .enumerateInstanceExtensionProperties,
     });
 
-    pub const DispatchInstance = vk.InstanceWrapper(.{
+    pub const DispatchInstance = vk.InstanceWrapper(&.{
         .destroyInstance,
         .enumeratePhysicalDevices,
+        .getDeviceProcAddr,
+        .getPhysicalDeviceProperties,
+        .getPhysicalDeviceQueueFamilyProperties,
+        .getPhysicalDeviceMemoryProperties,
+        .getPhysicalDeviceFeatures,
+        .getPhysicalDeviceFormatProperties,
+        .getPhysicalDeviceImageFormatProperties,
+        .createDevice,
     });
     
     pub const InstanceCreateInfo = struct {
@@ -113,7 +146,7 @@ const VulkanBase = struct {
         
         result.instance = try result.dispatch_base.createInstance(instance_create_info.asVkType(), p_allocator);
         errdefer cleanup_instance: {
-            const min_inst_dispatch = vk.InstanceWrapper(.{ .destroyInstance }).load(result.instance, cannonical_loader) catch |err| {
+            const min_inst_dispatch = vk.InstanceWrapper(&.{ .destroyInstance }).load(result.instance, cannonical_loader) catch |err| {
                 log.err("Failed to load instance destroy function; unable to cleanup instance after error '{s}'.", .{@errorName(err)});
                 break :cleanup_instance;
             };
@@ -126,5 +159,77 @@ const VulkanBase = struct {
     
     pub fn deinit(self: Self, p_allocator: ?*const vk.AllocationCallbacks) void {
         self.dispatch_instance.destroyInstance(self.instance, p_allocator);
+    }
+    
+    
+    
+    pub inline fn enumerateInstanceLayerPropertiesAlloc(self: Self, allocator: *mem.Allocator) ![]vk.LayerProperties {
+        var count: u32 = undefined;
+        assert(self.dispatch_base.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
+        
+        const slice = try allocator.alloc(vk.LayerProperties, count);
+        errdefer allocator.free(slice);
+        
+        assert(self.dispatch_base.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
+        assert(slice.len == count);
+        
+        return slice;
+    }
+    
+    pub inline fn enumerateInstanceLayerPropertiesArrayList(self: Self, array_list: *std.ArrayList(vk.LayerProperties)) !void {
+        var count: u32 = undefined;
+        assert(self.dispatch_base.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
+        
+        try array_list.resize(count);
+        assert(self.dispatch_base.enumerateInstanceLayerProperties(&count, array_list.items.ptr) catch unreachable == .success);
+        assert(array_list.items.len == count);
+    }
+    
+    
+    
+    pub inline fn enumerateInstanceExtensionPropertiesAlloc(self: Self, p_layer_name: ?[*:0]const u8, allocator: *mem.Allocator) ![]vk.ExtensionProperties {
+        var count: u32 = undefined;
+        assert(self.dispatch_base.enumerateInstanceExtensionProperties(p_layer_name, &count, null) catch unreachable == .success);
+        
+        const slice = try allocator.alloc(vk.ExtensionProperties, count);
+        errdefer allocator.free(slice);
+        
+        assert(self.dispatch_base.enumerateInstanceExtensionProperties(p_layer_name, &count, slice.ptr) catch unreachable == .success);
+        assert(slice.len == count);
+        
+        return slice;
+    }
+    
+    pub inline fn enumerateInstanceExtensionPropertiesArrayList(self: Self, p_layer_name: ?[*:0]const u8, array_list: std.ArrayList(vk.ExtensionProperties)) !void {
+        var count: u32 = undefined;
+        assert(self.dispatch_base.enumerateInstanceExtensionProperties(p_layer_name, &count, null) catch unreachable == .success);
+        
+        try array_list.resize(count);
+        assert(self.dispatch_base.enumerateInstanceExtensionProperties(p_layer_name, &count, array_list.items.ptr) catch unreachable == .success);
+        assert(array_list.items.len == count);
+    }
+    
+    
+    
+    pub inline fn enumeratePhysicalDevicesAlloc(self: Self, allocator: *mem.Allocator) ![]vk.PhysicalDevice {
+        var count: u32 = undefined;
+        assert(self.dispatch_instance.enumeratePhysicalDevices(self.instance, &count, null) catch unreachable == .success);
+        
+        const slice = try allocator.alloc(vk.PhysicalDevice, count);
+        errdefer allocator.free(slice);
+        
+        assert(self.dispatch_instance.enumeratePhysicalDevices(self.instance, &count, null) catch unreachable == .success);
+        assert(slice.len == count);
+        
+        return slice;
+    }
+    
+    pub inline fn enumeratePhysicalDevicesArrayList(self: Self, array_list: *std.ArrayList(vk.PhysicalDevice)) !void {
+        var count: u32 = undefined;
+        assert(self.dispatch_instance.enumeratePhysicalDevices(self.instance, &count, null) catch unreachable == .success);
+        
+        try array_list.resize(count);
+        assert(self.dispatch_instance.enumeratePhysicalDevices(self.instance, &count, array_list.items.ptr) catch unreachable == .success);
+        assert(array_list.items.len == count);
     }
 };
