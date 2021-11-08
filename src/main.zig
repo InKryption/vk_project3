@@ -33,11 +33,16 @@ const DispatchInstance = vk.InstanceWrapper(&[_]vk.InstanceCommand {
     .getDeviceProcAddr,
     .getPhysicalDeviceProperties,
     .getPhysicalDeviceQueueFamilyProperties,
-    //.getPhysicalDeviceMemoryProperties,
+    
     .getPhysicalDeviceFeatures,
     .getPhysicalDeviceFormatProperties,
-    //.getPhysicalDeviceImageFormatProperties,
+    
     .createDevice,
+    
+    .destroySurfaceKHR,
+    .getPhysicalDeviceSurfaceFormatsKHR,
+    .getPhysicalDeviceSurfacePresentModesKHR,
+    .getPhysicalDeviceSurfaceCapabilitiesKHR,
 });
 
 fn DispatchDevice(comptime dispatch_type: @Type(.EnumLiteral)) type {
@@ -59,22 +64,23 @@ pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }) {};
     defer _ = gpa_state.deinit();
     
-    var aa_state = std.heap.ArenaAllocator.init(&gpa_state.allocator);
-    defer aa_state.deinit();
-    
     const allocator_main: *mem.Allocator = &gpa_state.allocator;
     _ = allocator_main;
     
     try glfw.init();
     defer glfw.terminate();
     
-    try glfw.Window.hint(.resizable, false);
-    try glfw.Window.hint(.client_api, glfw.no_api);
-    const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
-    defer window.destroy();
-    
     const dispatch_base: DispatchBase = try DispatchBase.load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
-    const instance = try dispatch_base.createInstance((InstanceCreateInfo {}).asVkType(), null);
+    const instance = instance: {
+        const create_info = InstanceCreateInfo {
+            .enabled_extension_names = enabled_extension_names: {
+                const slice_of_cptr = try glfw.getRequiredInstanceExtensions();
+                break :enabled_extension_names makeSlice(@ptrCast([*]const [*:0]const u8, slice_of_cptr.ptr), slice_of_cptr.len);
+            },
+        };
+        
+        break :instance try dispatch_base.createInstance(create_info.asVkType(), null);
+    };
     defer destroy_instance: {
         const MinInstanceDispatch = vk.InstanceWrapper(&[_]vk.InstanceCommand { .destroyInstance });
         const mid = MinInstanceDispatch.load(instance, dispatch_base.dispatch.vkGetInstanceProcAddr) catch |err| {
@@ -92,7 +98,9 @@ pub fn main() !void {
         defer allocator_main.free(all_physical_devices);
         
         if (all_physical_devices.len == 0) return error.NoSupportedVulkanPhysicalDevices;
-        if (all_physical_devices.len == 1) break :selected_physical_device all_physical_devices[0];
+        if (all_physical_devices.len > 1) {
+            unreachable;
+        }
         
         break :selected_physical_device all_physical_devices[selected_idx];
     };
@@ -107,6 +115,7 @@ pub fn main() !void {
             dispatch_instance,
             selected_physical_device,
         );
+        defer allocator_main.free(queue_family_properties_list);
         
         for (queue_family_properties_list) |qfamily_properties, idx| {
             if (qfamily_properties.queue_flags.graphics_bit) {
@@ -128,12 +137,13 @@ pub fn main() !void {
                     .p_queue_priorities =  mem.span(&[_]f32{ 1.0 }).ptr,
                 },
             },
-            .enabled_extension_names = &.{},
+            .enabled_extension_names = &.{
+                vk.extension_info.khr_swapchain.name,
+            },
             .enabled_features = .{},
         };
         
         const as_vk_type = create_info.asVkType();
-        @breakpoint();
         break :device try dispatch_instance.createDevice(selected_physical_device, as_vk_type, null);
     };
     defer destroy_device: {
@@ -145,7 +155,40 @@ pub fn main() !void {
         mdd.destroyDevice(device, null);
     }
     const dispatch_device = try DispatchDevice(.default).load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr);
-    _ = dispatch_device;
+    
+    const graphics_queue = dispatch_device.getDeviceQueue(device, queue_family_indices.graphics.?, 0);
+    _ = graphics_queue;
+    
+    try glfw.Window.hint(.resizable, false);
+    try glfw.Window.hint(.client_api, glfw.no_api);
+    const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
+    defer window.destroy();
+    
+    const window_surface: vk.SurfaceKHR = window_surface: {
+        var window_surface_result: vk.SurfaceKHR = .null_handle;
+        
+        const result = @intToEnum(vk.Result, try glfw.createWindowSurface(instance, window, null, &window_surface_result));
+        if (result != .success) {
+            inline for (comptime enums.values(vk.Result)) |possible_value| {
+                if (result == possible_value) {
+                    @setEvalBranchQuota(10_000);
+                    
+                    const tag_name = @tagName(possible_value);
+                    
+                    comptime var error_name_buffer: [snakecaseToCamelCaseBufferSize(tag_name)]u8 = undefined;
+                    const error_name: []const u8 = comptime snakecaseToCamelCase(error_name_buffer[0..], tag_name);
+                    
+                    return @field(@Type(.{ .ErrorSet = &[_]builtin.TypeInfo.Error { .{ .name =  error_name } } }), error_name);
+                }
+            }
+        }
+        
+        break :window_surface window_surface_result;
+    };
+    defer dispatch_instance.destroySurfaceKHR(instance, window_surface, null);
+    
+    const swapchain_details = try SwapChainSupportInfo.init(allocator_main, dispatch_instance, selected_physical_device, window_surface);
+    defer swapchain_details.deinit(allocator_main);
     
     var timer = try time.Timer.start();
     while (!window.shouldClose()) {
@@ -181,6 +224,56 @@ fn getPhysicalDeviceQueueFamilyPropertiesAlloc(allocator: *mem.Allocator, dispat
     
     return slice;
 }
+
+
+
+const SwapChainSupportInfo = struct {
+    const Self = @This();
+    _mem: []const u8,
+    formats: []const vk.SurfaceFormatKHR,
+    present_modes: []const vk.PresentModeKHR,
+    capabilities: vk.SurfaceCapabilitiesKHR,
+    
+    pub fn init(allocator: *mem.Allocator, dispatch: DispatchInstance, physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) !Self {
+        const formats_count: u32 = formats_count: {
+            var count: u32 = undefined;
+            assert(dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, null) catch unreachable == .success);
+            break :formats_count count;
+        };
+        
+        const present_modes_count: u32 = present_modes_count: {
+            var count: u32 = undefined;
+            assert(dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, null) catch unreachable == .success);
+            break :present_modes_count count;
+        };
+        
+        const bytes = try allocator.alloc(u8, bytes_len: {
+            const formats_byte_len: usize = @sizeOf(vk.SurfaceFormatKHR) * formats_count;
+            const present_modes_bytes_len: usize = @sizeOf(vk.PresentModeKHR) * present_modes_count;
+            break :bytes_len formats_byte_len + present_modes_bytes_len;
+        });
+        errdefer allocator.free(bytes);
+        
+        var fba = std.heap.FixedBufferAllocator.init(bytes);
+        
+        const formats = fba.allocator.alloc(vk.SurfaceFormatKHR, formats_count) catch unreachable;
+        const present_modes = fba.allocator.alloc(vk.PresentModeKHR, present_modes_count) catch unreachable;
+        assert(meta.isError(fba.allocator.alloc(u8, 1)));
+        
+        return Self {
+            ._mem = bytes,
+            .formats = formats,
+            .present_modes = present_modes,
+            .capabilities = try dispatch.getPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface),
+        };
+    }
+    
+    pub fn deinit(self: Self, allocator: *mem.Allocator) void {
+        allocator.free(self._mem);
+    }
+};
+
+
 
 const InstanceCreateInfo = struct {
     s_type: vk.StructureType = meta.fieldInfo(VkType, .s_type).default_value.?,
@@ -241,3 +334,84 @@ const DeviceCreateInfo = struct {
         };
     }
 };
+
+fn MakeSlice(comptime Ptr: type) type {
+    comptime assert(trait.is(.Pointer)(Ptr));
+    const Child = meta.Child(Ptr);
+    
+    const ptr_info: builtin.TypeInfo.Pointer = @typeInfo(Ptr).Pointer;
+    
+    const Attributes = packed struct {
+        is_const: bool,
+        is_volatile: bool,
+        is_allowzero: bool,
+        
+        fn toInt(self: @This()) meta.Int(.unsigned, meta.fields(@This()).len) {
+            return @bitCast(meta.Int(.unsigned, meta.fields(@This()).len), self);
+        }
+    };
+    
+    const attributes = Attributes {
+        .is_const = ptr_info.is_const,
+        .is_volatile = ptr_info.is_volatile,
+        .is_allowzero = ptr_info.is_allowzero,
+    };
+    
+    return if (@as(?Child, ptr_info.sentinel)) |sentinel| switch (attributes.toInt()) {
+        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = false }).toInt() => [:sentinel]Child,
+        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = true  }).toInt() => [:sentinel]allowzero Child,
+        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = false }).toInt() => [:sentinel]volatile Child,
+        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = true  }).toInt() => [:sentinel]volatile allowzero Child,
+        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = false }).toInt() => [:sentinel]const Child,
+        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = true  }).toInt() => [:sentinel]const allowzero Child,
+        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = false }).toInt() => [:sentinel]const volatile Child,
+        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = true  }).toInt() => [:sentinel]const volatile allowzero Child,
+    } else switch (attributes.toInt()) {
+        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = false }).toInt() => []Child,
+        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = true  }).toInt() => []allowzero Child,
+        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = false }).toInt() => []volatile Child,
+        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = true  }).toInt() => []volatile allowzero Child,
+        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = false }).toInt() => []const Child,
+        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = true  }).toInt() => []const allowzero Child,
+        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = false }).toInt() => []const volatile Child,
+        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = true  }).toInt() => []const volatile allowzero Child,
+    };
+}
+
+
+
+fn makeSlice(ptr: anytype, len: usize) MakeSlice(@TypeOf(ptr)) {
+    const Result = MakeSlice(@TypeOf(ptr));
+    var result: Result = undefined;
+    result.ptr = @ptrCast(@TypeOf(result.ptr), ptr);
+    result.len = len;
+    return result;
+}
+
+
+
+fn snakecaseToCamelCaseBufferSize(snake_case: []const u8) usize {
+    return snake_case.len - mem.count(u8, snake_case, "_");
+}
+
+fn snakecaseToCamelCase(camel_case: []u8, snake_case: []const u8) []u8 {
+    const underscore_count = mem.count(u8, snake_case, "_");
+    assert(camel_case.len >= snake_case.len - underscore_count);
+    
+    var index: usize = 0;
+    var offset: usize = 0;
+    
+    while (index + offset < snake_case.len) : (index += 1) {
+        const char = snake_case[index + offset];
+        if (char == '_') {
+            offset += 1;
+            if (index + offset > snake_case.len) break;
+            camel_case[index] = std.ascii.toUpper(snake_case[index + offset]);
+            continue;
+        }
+        camel_case[index] = snake_case[index + offset];
+    }
+    
+    assert(offset == underscore_count);
+    return camel_case[0..index];
+}
