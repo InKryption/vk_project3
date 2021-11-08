@@ -13,15 +13,6 @@ pub fn build(b: *std.build.Builder) void {
     exe.setBuildMode(mode);
     exe.install();
     
-    //exe.addLibPath("C:/VulkanSDK/1.2.176.1/Lib/");
-    
-    //exe.linkLibC();
-    //exe.linkSystemLibrary("uuid");
-    //exe.linkSystemLibrary("MSVCRT");
-    //exe.linkSystemLibrary("gdi32");
-    //exe.linkSystemLibrary("vulkan-1");
-    
-    
     mach_glfw.link(b, exe, .{});
     exe.addPackagePath("mach-glfw", "dependencies/mach-glfw/src/main.zig");
 
