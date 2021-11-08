@@ -58,6 +58,7 @@ fn DispatchDevice(comptime dispatch_type: @Type(.EnumLiteral)) type {
 
 const QueueFamilyIndices = struct {
     graphics: ?u32,
+    present: ?u32,
 };
 
 pub fn main() !void {
@@ -105,9 +106,42 @@ pub fn main() !void {
         break :selected_physical_device all_physical_devices[selected_idx];
     };
     
+    
+    
+    try glfw.Window.hint(.resizable, false);
+    try glfw.Window.hint(.client_api, glfw.no_api);
+    const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
+    defer window.destroy();
+    
+    const window_surface: vk.SurfaceKHR = window_surface: {
+        var window_surface_result: vk.SurfaceKHR = .null_handle;
+        
+        const result = @intToEnum(vk.Result, try glfw.createWindowSurface(instance, window, null, &window_surface_result));
+        if (result != .success) {
+            inline for (comptime enums.values(vk.Result)) |possible_value| {
+                if (result == possible_value) {
+                    @setEvalBranchQuota(10_000);
+                    
+                    const tag_name = @tagName(possible_value);
+                    
+                    comptime var error_name_buffer: [snakecaseToCamelCaseBufferSize(tag_name)]u8 = undefined;
+                    const error_name: []const u8 = comptime snakecaseToCamelCase(error_name_buffer[0..], tag_name);
+                    
+                    return @field(@Type(.{ .ErrorSet = &[_]builtin.TypeInfo.Error { .{ .name =  error_name } } }), error_name);
+                }
+            }
+        }
+        
+        break :window_surface window_surface_result;
+    };
+    defer dispatch_instance.destroySurfaceKHR(instance, window_surface, null);
+    
+    
+    
     const queue_family_indices: QueueFamilyIndices = queue_family_indices: {
         var result: QueueFamilyIndices = .{
             .graphics = null,
+            .present = null,
         };
         
         const queue_family_properties_list: []const vk.QueueFamilyProperties = try getPhysicalDeviceQueueFamilyPropertiesAlloc(
@@ -118,9 +152,21 @@ pub fn main() !void {
         defer allocator_main.free(queue_family_properties_list);
         
         for (queue_family_properties_list) |qfamily_properties, idx| {
+            const present_support = try dispatch_instance.getPhysicalDeviceSurfaceSupportKHR(selected_physical_device, @intCast(u32, idx), window_surface);
+            if (qfamily_properties.queue_flags.graphics_bit and present_support == vk.TRUE) {
+                result.graphics = @intCast(u32, idx);
+                result.present = @intCast(u32, idx);
+                break;
+            }
+            
             if (qfamily_properties.queue_flags.graphics_bit) {
                 result.graphics = @intCast(u32, idx);
-                break;
+                if (result.present != null) break;
+            }
+            
+            if (present_support == vk.TRUE) {
+                result.present = @intCast(u32, idx);
+                if (result.graphics != null) break;
             }
         }
         
@@ -159,36 +205,70 @@ pub fn main() !void {
     const graphics_queue = dispatch_device.getDeviceQueue(device, queue_family_indices.graphics.?, 0);
     _ = graphics_queue;
     
-    try glfw.Window.hint(.resizable, false);
-    try glfw.Window.hint(.client_api, glfw.no_api);
-    const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
-    defer window.destroy();
-    
-    const window_surface: vk.SurfaceKHR = window_surface: {
-        var window_surface_result: vk.SurfaceKHR = .null_handle;
+    const swapchain: vk.SwapchainKHR = swapchain: {
+        const swapchain_details = try SwapChainSupportInfo.init(allocator_main, dispatch_instance, selected_physical_device, window_surface);
+        defer swapchain_details.deinit(allocator_main);
         
-        const result = @intToEnum(vk.Result, try glfw.createWindowSurface(instance, window, null, &window_surface_result));
-        if (result != .success) {
-            inline for (comptime enums.values(vk.Result)) |possible_value| {
-                if (result == possible_value) {
-                    @setEvalBranchQuota(10_000);
-                    
-                    const tag_name = @tagName(possible_value);
-                    
-                    comptime var error_name_buffer: [snakecaseToCamelCaseBufferSize(tag_name)]u8 = undefined;
-                    const error_name: []const u8 = comptime snakecaseToCamelCase(error_name_buffer[0..], tag_name);
-                    
-                    return @field(@Type(.{ .ErrorSet = &[_]builtin.TypeInfo.Error { .{ .name =  error_name } } }), error_name);
+        if (swapchain_details.formats.len == 0) return error.NoAvailableVulkanSurfaceSwapchainFormats;
+        const selected_format: vk.SurfaceFormatKHR = selected_format: {
+            for (swapchain_details.formats) |format| {
+                if (format.format == .b8g8r8a8_srgb and format.color_space == .srgb_nonlinear_khr) {
+                    break :selected_format format;
                 }
             }
-        }
+            
+            break :selected_format swapchain_details.formats[0];
+        };
         
-        break :window_surface window_surface_result;
+        if (swapchain_details.present_modes.len == 0) return error.NoAvailableVulkanSurfaceSwapchainPresentModes;
+        const selected_present_mode: vk.PresentModeKHR = selected_present_mode: {
+            for (swapchain_details.present_modes) |present_mode| {
+                if (present_mode == .mailbox_khr ) break :selected_present_mode present_mode;
+            }
+            assert(mem.count(vk.PresentModeKHR, swapchain_details.present_modes, &.{ .fifo_khr }) >= 1);
+            break :selected_present_mode .fifo_khr;
+        };
+        
+        const selected_swap_extent: vk.Extent2D = selected_swap_extent: {
+            if (swapchain_details.capabilities.current_extent.width != math.maxInt(u32)) {
+                break :selected_swap_extent swapchain_details.capabilities.current_extent;
+            } else {
+                const frame_buffer_size = try window.getFramebufferSize();
+                break :selected_swap_extent .{
+                    .width = @truncate(u32, frame_buffer_size.width),
+                    .height = @truncate(u32, frame_buffer_size.height),
+                };
+            }
+        };
+        
+        const image_count: u32 = image_count: {
+            const min = swapchain_details.capabilities.min_image_count;
+            const max = if (swapchain_details.capabilities.max_image_count == 0) math.maxInt(u32) else swapchain_details.capabilities.max_image_count;
+            break :image_count math.clamp(min + 1, min, max);
+        };
+        
+        //const create_info = vk.SwapchainCreateInfoKHR {
+        //    //.s_type = undefined,
+        //    //.p_next = undefined,
+        //    .flags = vk.SwapchainCreateFlagsKHR.fromInt(0),
+        //    .surface = window_surface,
+        //    .min_image_count = image_count,
+        //    .image_format = selected_format.format,
+        //    .image_color_space = selected_format.color_space,
+        //    .image_extent = selected_swap_extent,
+        //    .image_array_layers = 1,
+        //    .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
+        //    .image_sharing_mode = if (queue_family_indices.present.? == queue_family_indices.graphics.?) .exclusive else .concurrent,
+        //    .queue_family_index_count = if (queue_family_indices.present.? == queue_family_indices.graphics.?) 0 else queue_family_indices.present.?,
+        //    .p_queue_family_indices = if (queue_family_indices.present.? == queue_family_indices.graphics.?) .exclusive else .concurrent,
+        //    .pre_transform = undefined,
+        //    .composite_alpha = undefined,
+        //    .present_mode = undefined,
+        //    .clipped = undefined,
+        //    .old_swapchain = undefined,
+        //};
     };
-    defer dispatch_instance.destroySurfaceKHR(instance, window_surface, null);
     
-    const swapchain_details = try SwapChainSupportInfo.init(allocator_main, dispatch_instance, selected_physical_device, window_surface);
-    defer swapchain_details.deinit(allocator_main);
     
     var timer = try time.Timer.start();
     while (!window.shouldClose()) {
