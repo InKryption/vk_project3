@@ -36,21 +36,15 @@ const DispatchInstance = vk.InstanceWrapper(&[_]vk.InstanceCommand {
     .getPhysicalDeviceSurfaceCapabilitiesKHR,
 });
 
-fn DispatchDevice(comptime dispatch_type: @Type(.EnumLiteral)) type {
-    const cmds: []const vk.DeviceCommand = &switch (dispatch_type) {
-        .default => .{
-            .destroyDevice,
-            .getDeviceQueue,
-            .createSwapchainKHR,
-            .destroySwapchainKHR,
-        },
-        .destroyDevice => .{
-            .destroyDevice,
-        },
-        else => unreachable,
-    };
-    return vk.DeviceWrapper(cmds);
-}
+const DispatchDevice = vk.DeviceWrapper(&[_]vk.DeviceCommand {
+    .destroyDevice,
+    .getDeviceQueue,
+    .createImageView,
+    .destroyImageView,
+    .createSwapchainKHR,
+    .destroySwapchainKHR,
+    .getSwapchainImagesKHR,
+});
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }) {};
@@ -74,12 +68,17 @@ pub fn main() !void {
         surface: vk.SurfaceKHR,
         
         device: vk.Device,
-        dispatch_device: DispatchDevice(.default),
+        dispatch_device: DispatchDevice,
         
         queue_graphics: vk.Queue,
         queue_present: vk.Queue,
         
         swapchain: vk.SwapchainKHR,
+        swapchain_properties: struct {
+            extent: vk.Extent2D,
+            format: vk.SurfaceFormatKHR,
+            present_mode: vk.PresentModeKHR,
+        },
         
     } = basic_vulkan_components: {
         
@@ -332,13 +331,13 @@ pub fn main() !void {
             }, null);
         };
         errdefer destroy_device: {
-            const mdd = DispatchDevice(.destroyDevice).load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr) catch |err| {
+            const mdd = vk.DeviceWrapper(&[_]vk.DeviceCommand { .destroyDevice }).load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr) catch |err| {
                 log.err("Failed to load function to destroy device; vulkan device will not be destroyed. Error: {}\n", .{ err });
                 break :destroy_device;
             };
             mdd.destroyDevice(device, null);
         }
-        const dispatch_device: DispatchDevice(.default) = try DispatchDevice(.default).load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr);
+        const dispatch_device: DispatchDevice = try DispatchDevice.load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr);
         
         
         
@@ -347,7 +346,12 @@ pub fn main() !void {
         
         
                 
-        const swapchain: vk.SwapchainKHR = swapchain: {
+        const swapchain_and_properties: struct {
+            swapchain: vk.SwapchainKHR,
+            extent: vk.Extent2D,
+            format: vk.SurfaceFormatKHR,
+            present_mode: vk.PresentModeKHR,
+        } = swapchain_and_properties: {
             const capabilities = try dispatch_instance.getPhysicalDeviceSurfaceCapabilitiesKHR(selected_physical_device, surface);
             
             const all_formats: []const vk.SurfaceFormatKHR = all_formats: {
@@ -403,28 +407,33 @@ pub fn main() !void {
                 selected_queue_family_indices.get(.present),
             };
             
-            break :swapchain try dispatch_device.createSwapchainKHR(device, vk.SwapchainCreateInfoKHR {
-                // .s_type = undefined,
-                // .p_next = undefined,
-                .flags = vk.SwapchainCreateFlagsKHR.fromInt(0),
-                .surface = surface,
-                .min_image_count = image_count,
-                .image_format = selected_format.format,
-                .image_color_space = selected_format.color_space,
-                .image_extent = selected_swap_extent,
-                .image_array_layers = 1,
-                .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
-                .image_sharing_mode = if (qfamily_indices_array[0] == qfamily_indices_array[1]) .exclusive else .concurrent,
-                .queue_family_index_count = if (qfamily_indices_array[0] == qfamily_indices_array[1]) 0 else @intCast(u32, qfamily_indices_array.len),
-                .p_queue_family_indices = qfamily_indices_array.ptr,
-                .pre_transform = capabilities.current_transform,
-                .composite_alpha = vk.CompositeAlphaFlagsKHR { .opaque_bit_khr = true },
+            break :swapchain_and_properties .{
+                .swapchain = try dispatch_device.createSwapchainKHR(device, vk.SwapchainCreateInfoKHR {
+                    // .s_type = undefined,
+                    // .p_next = undefined,
+                    .flags = vk.SwapchainCreateFlagsKHR.fromInt(0),
+                    .surface = surface,
+                    .min_image_count = image_count,
+                    .image_format = selected_format.format,
+                    .image_color_space = selected_format.color_space,
+                    .image_extent = selected_swap_extent,
+                    .image_array_layers = 1,
+                    .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
+                    .image_sharing_mode = if (qfamily_indices_array[0] == qfamily_indices_array[1]) .exclusive else .concurrent,
+                    .queue_family_index_count = if (qfamily_indices_array[0] == qfamily_indices_array[1]) 0 else @intCast(u32, qfamily_indices_array.len),
+                    .p_queue_family_indices = qfamily_indices_array.ptr,
+                    .pre_transform = capabilities.current_transform,
+                    .composite_alpha = vk.CompositeAlphaFlagsKHR { .opaque_bit_khr = true },
+                    .present_mode = selected_present_mode,
+                    .clipped = vk.TRUE,
+                    .old_swapchain = .null_handle,
+                }, null),
+                .extent = selected_swap_extent,
+                .format = selected_format,
                 .present_mode = selected_present_mode,
-                .clipped = vk.TRUE,
-                .old_swapchain = .null_handle,
-            }, null);
+            };
         };
-        errdefer dispatch_device.destroySwapchainKHR(device, swapchain, null);
+        errdefer dispatch_device.destroySwapchainKHR(device, swapchain_and_properties.swapchain, null);
         
         
         
@@ -440,7 +449,12 @@ pub fn main() !void {
             .queue_graphics = queue_graphics,
             .queue_present = queue_present,
             
-            .swapchain = swapchain,
+            .swapchain = swapchain_and_properties.swapchain,
+            .swapchain_properties = .{
+                .extent = swapchain_and_properties.extent,
+                .format = swapchain_and_properties.format,
+                .present_mode = swapchain_and_properties.present_mode,
+            },
         };
     };
     
@@ -452,7 +466,7 @@ pub fn main() !void {
     defer dispatch_instance.destroySurfaceKHR(instance, surface, null);
     
     const device: vk.Device = basic_vulkan_components.device;
-    const dispatch_device: DispatchDevice(.default) = basic_vulkan_components.dispatch_device;
+    const dispatch_device: DispatchDevice = basic_vulkan_components.dispatch_device;
     defer dispatch_device.destroyDevice(device, null);
     
     const queue_graphics: vk.Queue = basic_vulkan_components.queue_graphics;
@@ -461,8 +475,92 @@ pub fn main() !void {
     _ = queue_graphics;
     _ = queue_present;
     
-    const swapchain: vk.SwapchainKHR = basic_vulkan_components.swapchain;
-    defer dispatch_device.destroySwapchainKHR(device, swapchain, null);
+    
+    const swapchain: struct {
+        _heap: []const u8,
+        handle: vk.SwapchainKHR,
+        images: []const vk.Image,
+        views: []const vk.ImageView,
+    } = swapchain_body: {
+        const handle = basic_vulkan_components.swapchain;
+        errdefer dispatch_device.destroySwapchainKHR(device, handle, null);
+        
+        var image_count: u32 = undefined;
+        assert(dispatch_device.getSwapchainImagesKHR(device, handle, &image_count, null) catch unreachable == .success);
+        
+        const view_count: u32 = image_count;
+        
+        const images_bytes_len = image_count * @sizeOf(vk.Image);
+        const views_bytes_len = view_count * @sizeOf(vk.ImageView);
+        
+        const _heap = try allocator_main.allocAdvanced(u8, null, images_bytes_len + views_bytes_len, .at_least);
+        errdefer allocator_main.free(_heap);
+        
+        var local_fba_state = std.heap.FixedBufferAllocator.init(_heap);
+        const local_fba_allocator: *mem.Allocator = &local_fba_state.allocator;
+        
+        const swapchain_images: []const vk.Image = swapchain_images: {
+            const slice = local_fba_allocator.alloc(vk.Image, image_count) catch unreachable;
+            errdefer local_fba_allocator.free(slice);
+            
+            assert(dispatch_device.getSwapchainImagesKHR(device, handle, &image_count, slice.ptr) catch unreachable == .success);
+            assert(slice.len == image_count);
+            
+            break :swapchain_images slice;
+        };
+        errdefer local_fba_allocator.free(swapchain_images);
+        
+        const swapchain_views: []const vk.ImageView = swapchain_views: {
+            const slice = local_fba_allocator.alloc(vk.ImageView, swapchain_images.len) catch unreachable;
+            errdefer local_fba_allocator.free(slice);
+            
+            for (slice) |*image_view, idx| {
+                image_view.* = try dispatch_device.createImageView(device, vk.ImageViewCreateInfo {
+                    // .s_type = undefined,
+                    // .p_next = undefined,
+                    .flags = vk.ImageViewCreateFlags {},
+                    .image = swapchain_images[idx],
+                    .view_type = vk.ImageViewType.@"2d",
+                    .format = basic_vulkan_components.swapchain_properties.format.format,
+                    .components = vk.ComponentMapping {
+                        .r = vk.ComponentSwizzle.identity,
+                        .g = vk.ComponentSwizzle.identity,
+                        .b = vk.ComponentSwizzle.identity,
+                        .a = vk.ComponentSwizzle.identity,
+                    },
+                    .subresource_range = vk.ImageSubresourceRange {
+                        .aspect_mask = vk.ImageAspectFlags { .color_bit = true },
+                        .base_mip_level = 0,
+                        .level_count = 1,
+                        .base_array_layer = 0,
+                        .layer_count = 1,
+                    },
+                }, null);
+            }
+            
+            break :swapchain_views slice;
+        };
+        errdefer {
+            for (swapchain_views) |image_view| {
+                dispatch_device.destroyImageView(device, image_view, null);
+            }
+            local_fba_allocator.free(swapchain_views);
+        }
+        
+        break :swapchain_body .{
+            ._heap = _heap,
+            .handle = handle,
+            .images = swapchain_images,
+            .views = swapchain_views,
+        };
+    };
+    defer {
+        for (swapchain.views) |image_view| {
+            dispatch_device.destroyImageView(device, image_view, null);
+        }
+        allocator_main.free(swapchain._heap);
+        dispatch_device.destroySwapchainKHR(device, swapchain.handle, null);
+    }
     
     
     
@@ -473,59 +571,6 @@ pub fn main() !void {
         
         
     }
-}
-
-
-
-fn MakeSlice(comptime Ptr: type) type {
-    comptime assert(trait.is(.Pointer)(Ptr));
-    const Child = meta.Child(Ptr);
-    
-    const ptr_info: builtin.TypeInfo.Pointer = @typeInfo(Ptr).Pointer;
-    
-    const Attributes = packed struct {
-        is_const: bool,
-        is_volatile: bool,
-        is_allowzero: bool,
-        
-        fn toInt(self: @This()) meta.Int(.unsigned, meta.fields(@This()).len) {
-            return @bitCast(meta.Int(.unsigned, meta.fields(@This()).len), self);
-        }
-    };
-    
-    const attributes = Attributes {
-        .is_const = ptr_info.is_const,
-        .is_volatile = ptr_info.is_volatile,
-        .is_allowzero = ptr_info.is_allowzero,
-    };
-    
-    return if (@as(?Child, ptr_info.sentinel)) |sentinel| switch (attributes.toInt()) {
-        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = false }).toInt() => [:sentinel]Child,
-        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = true  }).toInt() => [:sentinel]allowzero Child,
-        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = false }).toInt() => [:sentinel]volatile Child,
-        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = true  }).toInt() => [:sentinel]volatile allowzero Child,
-        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = false }).toInt() => [:sentinel]const Child,
-        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = true  }).toInt() => [:sentinel]const allowzero Child,
-        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = false }).toInt() => [:sentinel]const volatile Child,
-        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = true  }).toInt() => [:sentinel]const volatile allowzero Child,
-    } else switch (attributes.toInt()) {
-        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = false }).toInt() => []Child,
-        (Attributes { .is_const = false, .is_volatile = false, .is_allowzero = true  }).toInt() => []allowzero Child,
-        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = false }).toInt() => []volatile Child,
-        (Attributes { .is_const = false, .is_volatile = true,  .is_allowzero = true  }).toInt() => []volatile allowzero Child,
-        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = false }).toInt() => []const Child,
-        (Attributes { .is_const = true,  .is_volatile = false, .is_allowzero = true  }).toInt() => []const allowzero Child,
-        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = false }).toInt() => []const volatile Child,
-        (Attributes { .is_const = true,  .is_volatile = true,  .is_allowzero = true  }).toInt() => []const volatile allowzero Child,
-    };
-}
-
-fn makeSlice(ptr: anytype, len: usize) MakeSlice(@TypeOf(ptr)) {
-    const Result = MakeSlice(@TypeOf(ptr));
-    var result: Result = undefined;
-    result.ptr = @ptrCast(@TypeOf(result.ptr), ptr);
-    result.len = len;
-    return result;
 }
 
 
