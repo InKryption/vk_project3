@@ -17,34 +17,7 @@ const print = debug.print;
 const vk = @import("vulkan");
 const glfw = @import("mach-glfw");
 
-const DispatchInstance = vk.InstanceWrapper(&[_]vk.InstanceCommand {
-    .destroyInstance,
-    .enumeratePhysicalDevices,
-    .getDeviceProcAddr,
-    .getPhysicalDeviceProperties,
-    .getPhysicalDeviceQueueFamilyProperties,
-    
-    .getPhysicalDeviceFeatures,
-    .getPhysicalDeviceFormatProperties,
-    
-    .createDevice,
-    
-    .destroySurfaceKHR,
-    .getPhysicalDeviceSurfaceSupportKHR,
-    .getPhysicalDeviceSurfaceFormatsKHR,
-    .getPhysicalDeviceSurfacePresentModesKHR,
-    .getPhysicalDeviceSurfaceCapabilitiesKHR,
-});
 
-const DispatchDevice = vk.DeviceWrapper(&[_]vk.DeviceCommand {
-    .destroyDevice,
-    .getDeviceQueue,
-    .createImageView,
-    .destroyImageView,
-    .createSwapchainKHR,
-    .destroySwapchainKHR,
-    .getSwapchainImagesKHR,
-});
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }) {};
@@ -61,42 +34,52 @@ pub fn main() !void {
     const window = try glfw.Window.create(600, 600, "vk_project3", null, null);
     defer window.destroy();
     
-    const basic_vulkan_components: struct {
-        instance: vk.Instance,
-        dispatch_instance: DispatchInstance,
+    
+    const DispatchInstance = vk.InstanceWrapper(&[_]vk.InstanceCommand {
+        .destroyInstance,
+        .enumeratePhysicalDevices,
+        .getDeviceProcAddr,
+        .getPhysicalDeviceProperties,
+        .getPhysicalDeviceQueueFamilyProperties,
         
-        surface: vk.SurfaceKHR,
+        .getPhysicalDeviceFeatures,
+        .getPhysicalDeviceFormatProperties,
         
-        device: vk.Device,
-        dispatch_device: DispatchDevice,
+        .createDevice,
         
-        queue_graphics: vk.Queue,
-        queue_present: vk.Queue,
-        
-        swapchain: vk.SwapchainKHR,
-        swapchain_properties: struct {
-            extent: vk.Extent2D,
-            format: vk.SurfaceFormatKHR,
-            present_mode: vk.PresentModeKHR,
-        },
-        
-    } = basic_vulkan_components: {
-        
+        .destroySurfaceKHR,
+        .getPhysicalDeviceSurfaceSupportKHR,
+        .getPhysicalDeviceSurfaceFormatsKHR,
+        .getPhysicalDeviceSurfacePresentModesKHR,
+        .getPhysicalDeviceSurfaceCapabilitiesKHR,
+    });
+
+    const DispatchDevice = vk.DeviceWrapper(&[_]vk.DeviceCommand {
+        .destroyDevice,
+        .getDeviceQueue,
+        .createImageView,
+        .destroyImageView,
+        .createSwapchainKHR,
+        .destroySwapchainKHR,
+        .getSwapchainImagesKHR,
+    });
+    
+    const instance: struct {
+        handle: vk.Instance,
+        dispatch: DispatchInstance,
+    } = instance: {
         var local_aa_state = std.heap.ArenaAllocator.init(allocator_main);
         defer local_aa_state.deinit();
-        const local_arena_allocator: *mem.Allocator = &local_aa_state.allocator;
         
-        const instance: vk.Instance = instance: {
-            const DispatchBase = vk.BaseWrapper(comptime enums.values(vk.BaseCommand));
-            const dispatch_base: DispatchBase = try DispatchBase.load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
-            
+        const handle: vk.Instance = handle: {
+            const base_dispatch = try vk.BaseWrapper(comptime enums.values(vk.BaseCommand)).load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
             const enabled_layer_names: []const [*:0]const u8 = enabled_layer_names: {
                 break :enabled_layer_names &.{};
             };
-            defer local_arena_allocator.free(enabled_layer_names);
+            defer local_aa_state.allocator.free(enabled_layer_names);
             
             const enabled_extension_names: []const [*:0]const u8 = enabled_extension_names: {
-                var result = std.ArrayList([*:0]const u8).init(local_arena_allocator);
+                var result = std.ArrayList([*:0]const u8).init(&local_aa_state.allocator);
                 errdefer result.deinit();
                 
                 try result.appendSlice(glfw_extensions: {
@@ -109,12 +92,13 @@ pub fn main() !void {
                 
                 break :enabled_extension_names result.toOwnedSlice();
             };
-            defer local_arena_allocator.free(enabled_extension_names);
+            defer local_aa_state.allocator.free(enabled_extension_names);
             
-            break :instance try dispatch_base.createInstance(vk.InstanceCreateInfo {
-                // .s_type = undefined,
-                // .p_next = undefined,
-                .flags = vk.InstanceCreateFlags.fromInt(0),
+            break :handle try base_dispatch.createInstance(vk.InstanceCreateInfo {
+                .s_type = .instance_create_info,
+                .p_next = null,
+                
+                .flags = vk.InstanceCreateFlags {},
                 .p_application_info = null,
                 
                 .enabled_layer_count = @intCast(u32, enabled_layer_names.len),
@@ -125,442 +109,199 @@ pub fn main() !void {
             }, null);
         };
         errdefer destroy_instance: {
-            const MinInstanceDispatch = vk.InstanceWrapper(&[_]vk.InstanceCommand { .destroyInstance });
-            const mid = MinInstanceDispatch.load(instance, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress)) catch |err| {
-                log.err("Failed to load function to destroy instance; vulkan instance will not be destroyed. Error: {}\n", .{ err });
+            const mbd = vk.InstanceWrapper(&[_]vk.InstanceCommand { .destroyInstance }).load(handle, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress)) catch |err| {
+                log.err("Encountered problem '{}' when trying to load function to destroy instance; instance will remain undestroyed.\n", .{err});
                 break :destroy_instance;
             };
-            mid.destroyInstance(instance, null);
+            mbd.destroyInstance(handle, null);
         }
-        const dispatch_instance: DispatchInstance = try DispatchInstance.load(instance, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
         
+        const instance_dispatch: DispatchInstance = try DispatchInstance.load(handle, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
         
-        
-        const surface: vk.SurfaceKHR = surface: {
-            var surface_result: vk.SurfaceKHR = .null_handle;
-            
-            const result = @intToEnum(vk.Result, try glfw.createWindowSurface(instance, window, null, &surface_result));
-            if (result != .success) {
-                inline for (comptime enums.values(vk.Result)) |possible_value| {
-                    @setEvalBranchQuota(10_000);
-                    if (possible_value == result) comptime {
-                        const tag_name = @tagName(possible_value);
-                        var err_name: [snakecaseToCamelCaseBufferSize(tag_name)]u8 = undefined;
-                        _ = snakecaseToCamelCase(err_name[0..], tag_name);
-                        
-                        const real_err_name: []const u8 = if (mem.startsWith(u8, &err_name, "error")) err_name["error".len..] else err_name[0..];
-                        return @field(@Type(.{ .ErrorSet = &.{ .{ .name = real_err_name } } }), real_err_name);
-                    };
-                }
-            }
-            
-            assert(surface_result != .null_handle);
-            break :surface surface_result;
+        break :instance .{
+            .handle = handle,
+            .dispatch = instance_dispatch,
         };
-        errdefer dispatch_instance.destroySurfaceKHR(instance, surface, null);
+    };
+    defer instance.dispatch.destroyInstance(instance.handle, null);
+    
+    
+    
+    const surface: vk.SurfaceKHR = surface: {
+        var surface_result: vk.SurfaceKHR = .null_handle;
         
+        const result = @intToEnum(vk.Result, try glfw.createWindowSurface(instance.handle, window, null, &surface_result));
+        if (result != .success) {
+            inline for (comptime enums.values(vk.Result)) |possible_value| {
+                @setEvalBranchQuota(10_000);
+                if (possible_value == result) comptime {
+                    const tag_name = @tagName(possible_value);
+                    var err_name: [snakecaseToCamelCaseBufferSize(tag_name)]u8 = undefined;
+                    _ = snakecaseToCamelCase(err_name[0..], tag_name);
+                    
+                    const real_err_name: []const u8 = if (mem.startsWith(u8, &err_name, "error")) err_name["error".len..] else err_name[0..];
+                    return @field(@Type(.{ .ErrorSet = &.{ .{ .name = real_err_name } } }), real_err_name);
+                };
+            }
+        }
         
-        
+        assert(surface_result != .null_handle);
+        break :surface surface_result;
+    };
+    defer instance.dispatch.destroySurfaceKHR(instance.handle, surface, null);
+    
+    
+    
+    const physical_device: vk.PhysicalDevice = physical_device: {
         const all_physical_devices: []const vk.PhysicalDevice = all_physical_devices: {
             var count: u32 = undefined;
-            assert(dispatch_instance.enumeratePhysicalDevices(instance, &count, null) catch unreachable == .success);
+            assert(instance.dispatch.enumeratePhysicalDevices(instance.handle, &count, null) catch unreachable == .success);
             
-            const slice = try local_arena_allocator.alloc(vk.PhysicalDevice, count);
-            errdefer local_arena_allocator.free(slice);
+            const slice = try allocator_main.alloc(vk.PhysicalDevice, count);
+            errdefer allocator_main.free(slice);
             
-            assert(dispatch_instance.enumeratePhysicalDevices(instance, &count, slice.ptr) catch unreachable == .success);
+            assert(instance.dispatch.enumeratePhysicalDevices(instance.handle, &count, slice.ptr) catch unreachable == .success);
             assert(slice.len == count);
             
             break :all_physical_devices slice;
         };
-        defer local_arena_allocator.free(all_physical_devices);
+        defer allocator_main.free(all_physical_devices);
+        
         if (all_physical_devices.len == 0) return error.NoSupportedVulkanPhysicalDevices;
-        
-        
-        
-        const selected_physical_device: vk.PhysicalDevice = selected_physical_device: {
-            var selected_idx: usize = 0;
-            
-            if (all_physical_devices.len > 1) {
-                unreachable;
-            }
-            
-            break :selected_physical_device all_physical_devices[selected_idx];
-        };
-        
-        
-        
+        if (all_physical_devices.len == 1) {
+            break :physical_device all_physical_devices[0];
+        } else {
+            unreachable;
+        }
+    };
+    
+    
+    
+    const QueueFamilyIndices = enums.EnumArray(
+        enum {
+            graphics,
+            present,
+        },
+        u32,
+    );
+    
+    const queue_family_indices: QueueFamilyIndices = queue_family_indices: {
         const queue_family_properties: []const vk.QueueFamilyProperties = queue_family_properties: {
             var count: u32 = undefined;
-            dispatch_instance.getPhysicalDeviceQueueFamilyProperties(selected_physical_device, &count, null);
+            instance.dispatch.getPhysicalDeviceQueueFamilyProperties(physical_device, &count, null);
             
-            const slice = try local_arena_allocator.alloc(vk.QueueFamilyProperties, count);
-            errdefer local_arena_allocator.free(slice);
-            dispatch_instance.getPhysicalDeviceQueueFamilyProperties(selected_physical_device, &count, slice.ptr);
+            const slice = try allocator_main.alloc(vk.QueueFamilyProperties, count);
+            errdefer allocator_main.free(slice);
+            
+            instance.dispatch.getPhysicalDeviceQueueFamilyProperties(physical_device, &count, slice.ptr);
             assert(slice.len == count);
             
             break :queue_family_properties slice;
         };
-        defer local_arena_allocator.free(queue_family_properties);
-        if (queue_family_properties.len == 0) return error.NoVulkanQueueFamilyProperties;
+        defer allocator_main.free(queue_family_properties);
         
+        var graphics_index: ?u32 = null;
+        var present_index: ?u32 = null;
         
-        
-        const QueueFamilyIndices = struct {
-            _indexes: [meta.fields(@This().IndexName).len]u32,
+        for (queue_family_properties) |qfamily_properties, idx| {
+            const surface_support: bool = (instance.dispatch.getPhysicalDeviceSurfaceSupportKHR(
+                physical_device,
+                @intCast(u32, idx),
+                surface,
+            ) catch vk.FALSE) == vk.TRUE;
             
-            const IndexName = enum(usize) {
-                graphics = 0,
-                present = 1,
-            };
-            
-            const InitEntry = meta.Tuple(&[_]type { IndexName, u32 });
-            fn init(values: []const InitEntry) @This() {
-                var this: @This() = undefined;
-                assert(values.len == this.array().len);
-                assert(assertion: for (values) |entry, idx| (for (values) |other_entry, other_idx| if (idx != other_idx and entry.@"0" == other_entry.@"0") break :assertion false) else true);
-                
-                for (values) |entry| {
-                    this.getPtr(entry.@"0").* = entry.@"1";
-                }
-                
-                return this;
+            if (qfamily_properties.queue_flags.graphics_bit and surface_support) {
+                graphics_index = @intCast(u32, idx);
+                present_index = @intCast(u32, idx);
+                break;
             }
             
-            fn array(this: @This()) [meta.fields(@This().IndexName).len]u32 {
-                return this._indexes;
+            if (qfamily_properties.queue_flags.graphics_bit) {
+                graphics_index = @intCast(u32, idx);
+                if (present_index != null) break;
             }
             
-            fn get(this: @This(), index_name: @This().IndexName) u32 {
-                var copy = this;
-                return copy.getPtr(index_name).*;
+            if (surface_support) {
+                present_index = @intCast(u32, idx);
+                if (graphics_index != null) break;
             }
-            
-            fn getPtr(this: *@This(), index_name: @This().IndexName) *u32 {
-                return &this._indexes[@enumToInt(index_name)];
-            }
-        };
+        }
         
-        const selected_queue_family_indices: QueueFamilyIndices = selected_queue_family_indices: {
-            var graphics_index: ?u32 = null;
-            var present_index: ?u32 = null;
-            
-            for (queue_family_properties) |qfamily_properties, idx| {
-                const surface_support: bool = (dispatch_instance.getPhysicalDeviceSurfaceSupportKHR(
-                    selected_physical_device,
-                    @intCast(u32, idx),
-                    surface,
-                ) catch vk.FALSE) == vk.TRUE;
-                
-                if (qfamily_properties.queue_flags.graphics_bit and surface_support) {
-                    graphics_index = @intCast(u32, idx);
-                    present_index = @intCast(u32, idx);
-                    break;
-                }
-                
-                if (qfamily_properties.queue_flags.graphics_bit) {
-                    graphics_index = @intCast(u32, idx);
-                    if (present_index != null) break;
-                }
-                
-                if (surface_support) {
-                    present_index = @intCast(u32, idx);
-                    if (graphics_index != null) break;
-                }
-            }
-            
-            if (graphics_index == null) return error.FailedToFindGraphicsQueue;
-            if (present_index == null) return error.FailedToFindPresentQueue;
-            
-            break :selected_queue_family_indices QueueFamilyIndices.init(&[_]QueueFamilyIndices.InitEntry {
-                .{ .graphics, graphics_index.? },
-                .{ .present, present_index.? },
-            });
-        };
+        var result = QueueFamilyIndices.initUndefined();
+        result.set(.graphics, graphics_index orelse return error.FailedToFindGraphicsQueue);
+        result.set(.present, present_index orelse return error.FailedToFindPresentQueue);
+        break :queue_family_indices result;
+    };
+    
+    const graphics_and_present_queues_equal = queue_family_indices.get(.graphics) == queue_family_indices.get(.present);
+    
+    const device: struct {
+        handle: vk.Device,
+        dispatch: DispatchDevice,
+    } = device: {
+        const queue_priorities: []const f32 = if (graphics_and_present_queues_equal) &[_]f32 { 1.0 } else &[_]f32 { 1.0, 1.0 };
         
-        
-        
-        const device: vk.Device = device: {
-            
-            const queue_priorities = [_]f32 { 1.0 };
-            //const queue_priorities = [_]f32 { 1.0, 1.0 };
-            const flags = vk.DeviceQueueCreateFlags {};
-            
-            var queue_create_infos = try std.ArrayList(vk.DeviceQueueCreateInfo).initCapacity(local_arena_allocator, 2);
-            defer queue_create_infos.deinit();
-            
+        const queue_create_infos: []const vk.DeviceQueueCreateInfo = queue_create_infos: {
+            var queue_create_infos = try std.ArrayList(vk.DeviceQueueCreateInfo).initCapacity(allocator_main, 2);
+            errdefer queue_create_infos.deinit();
+          
             try queue_create_infos.append(vk.DeviceQueueCreateInfo {
                 // .s_type = undefined,
                 // .p_next = undefined,
-                .flags = flags,
-                .queue_family_index = selected_queue_family_indices.get(.graphics),
-                .queue_count = queue_priorities.len,
-                .p_queue_priorities = @as([]const f32, &queue_priorities).ptr,
+                .flags = vk.DeviceQueueCreateFlags {},
+                .queue_family_index = queue_family_indices.get(.graphics),
+                .queue_count = @intCast(u32, queue_priorities.len),
+                .p_queue_priorities = queue_priorities.ptr,
             });
-            
-            if (selected_queue_family_indices.get(.graphics) != selected_queue_family_indices.get(.present)) {
-                try queue_create_infos.append(vk.DeviceQueueCreateInfo {
-                    // .s_type = undefined,
-                    // .p_next = undefined,
-                    .flags = flags,
-                    .queue_family_index = selected_queue_family_indices.get(.present),
-                    .queue_count = queue_priorities.len,
-                    .p_queue_priorities = @as([]const f32, &queue_priorities).ptr,
-                });
-            }
-            
-            const enabled_extension_names = [_][*:0]const u8 {
-                vk.extension_info.khr_swapchain.name.ptr,
-            };
-            
-            break :device try dispatch_instance.createDevice(selected_physical_device, vk.DeviceCreateInfo {
+          
+            if (!graphics_and_present_queues_equal) try queue_create_infos.append(vk.DeviceQueueCreateInfo {
                 // .s_type = undefined,
                 // .p_next = undefined,
-                .flags = vk.DeviceCreateFlags.fromInt(0),
-                
-                .queue_create_info_count = @intCast(u32, queue_create_infos.items.len),
-                .p_queue_create_infos = queue_create_infos.items.ptr,
-                
-                .enabled_layer_count = 0,
-                .pp_enabled_layer_names = mem.span(&[_][*:0]const u8{}).ptr,
-                
-                .enabled_extension_count = @intCast(u32, enabled_extension_names.len),
-                .pp_enabled_extension_names = mem.span(&enabled_extension_names).ptr,
-                
-                .p_enabled_features = null,
-            }, null);
+                .flags = vk.DeviceQueueCreateFlags {},
+                .queue_family_index = queue_family_indices.get(.present),
+                .queue_count = @intCast(u32, queue_priorities.len),
+                .p_queue_priorities = queue_priorities.ptr,
+            });
+            
+            break :queue_create_infos queue_create_infos.toOwnedSlice();
         };
+        defer allocator_main.free(queue_create_infos);
+        
+        const enabled_extension_names: []const [*:0]const u8 = &.{
+            vk.extension_info.khr_swapchain.name.ptr,
+        };
+      
+        const handle = try instance.dispatch.createDevice(physical_device, vk.DeviceCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.DeviceCreateFlags {},
+          
+            .queue_create_info_count = @intCast(u32, queue_create_infos.len),
+            .p_queue_create_infos = queue_create_infos.ptr,
+          
+            .enabled_layer_count = 0,
+            .pp_enabled_layer_names = mem.span(&[_][*:0]const u8{}).ptr,
+          
+            .enabled_extension_count = @intCast(u32, enabled_extension_names.len),
+            .pp_enabled_extension_names = enabled_extension_names.ptr,
+          
+            .p_enabled_features = null,
+        }, null);
         errdefer destroy_device: {
-            const mdd = vk.DeviceWrapper(&[_]vk.DeviceCommand { .destroyDevice }).load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr) catch |err| {
+            const mdd = vk.DeviceWrapper(&[_]vk.DeviceCommand { .destroyDevice }).load(handle, instance.dispatch.dispatch.vkGetDeviceProcAddr) catch |err| {
                 log.err("Failed to load function to destroy device; vulkan device will not be destroyed. Error: {}\n", .{ err });
                 break :destroy_device;
             };
-            mdd.destroyDevice(device, null);
+            mdd.destroyDevice(handle, null);
         }
-        const dispatch_device: DispatchDevice = try DispatchDevice.load(device, dispatch_instance.dispatch.vkGetDeviceProcAddr);
+        const device_dispatch: DispatchDevice = try DispatchDevice.load(handle, instance.dispatch.dispatch.vkGetDeviceProcAddr);
         
-        
-        
-        const queue_graphics: vk.Queue = dispatch_device.getDeviceQueue(device, selected_queue_family_indices.get(.graphics), 0);
-        const queue_present: vk.Queue = dispatch_device.getDeviceQueue(device, selected_queue_family_indices.get(.present), @boolToInt(selected_queue_family_indices.get(.graphics) != selected_queue_family_indices.get(.present)));
-        
-        
-                
-        const swapchain_and_properties: struct {
-            swapchain: vk.SwapchainKHR,
-            extent: vk.Extent2D,
-            format: vk.SurfaceFormatKHR,
-            present_mode: vk.PresentModeKHR,
-        } = swapchain_and_properties: {
-            const capabilities = try dispatch_instance.getPhysicalDeviceSurfaceCapabilitiesKHR(selected_physical_device, surface);
-            
-            const all_formats: []const vk.SurfaceFormatKHR = all_formats: {
-                var count: u32 = undefined;
-                assert(dispatch_instance.getPhysicalDeviceSurfaceFormatsKHR(selected_physical_device, surface, &count, null) catch unreachable == .success);
-                
-                const slice = try local_arena_allocator.alloc(vk.SurfaceFormatKHR, count);
-                assert(dispatch_instance.getPhysicalDeviceSurfaceFormatsKHR(selected_physical_device, surface, &count, slice.ptr) catch unreachable == .success);
-                assert(slice.len == count);
-                
-                break :all_formats slice;
-            };
-            
-            const all_present_modes: []const vk.PresentModeKHR = all_present_modes: {
-                var count: u32 = undefined;
-                assert(dispatch_instance.getPhysicalDeviceSurfacePresentModesKHR(selected_physical_device, surface, &count, null) catch unreachable == .success);
-                
-                const slice = try local_arena_allocator.alloc(vk.PresentModeKHR, count);
-                assert(dispatch_instance.getPhysicalDeviceSurfacePresentModesKHR(selected_physical_device, surface, &count, slice.ptr) catch unreachable == .success);
-                assert(slice.len == count);
-                
-                break :all_present_modes slice;
-            };
-            
-            
-            
-            const selected_swap_extent: vk.Extent2D = selected_swap_extent: {
-                if (capabilities.current_extent.width != math.maxInt(u32) and capabilities.current_extent.height != math.maxInt(u32)) {
-                    break :selected_swap_extent capabilities.current_extent;
-                } else {
-                    const fb_size = try window.getFramebufferSize();
-                    break :selected_swap_extent .{
-                        .width = @intCast(u32, math.clamp(fb_size.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width)),
-                        .height = @intCast(u32, math.clamp(fb_size.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height)),
-                    };
-                }
-            };
-            
-            const selected_format: vk.SurfaceFormatKHR = selected_format: for (all_formats) |format| {
-                if (format.format == .b8g8r8a8_srgb and format.color_space == .srgb_nonlinear_khr)
-                    break :selected_format format;
-            } else all_formats[0];
-            
-            const selected_present_mode: vk.PresentModeKHR = selected_present_mode: for (all_present_modes) |present_mode| {
-                if (present_mode == .mailbox_khr)
-                    break :selected_present_mode present_mode;
-            } else .fifo_khr;
-            
-            const image_count = math.clamp(capabilities.min_image_count + 1, capabilities.min_image_count, if (capabilities.max_image_count == 0) math.maxInt(u32) else capabilities.max_image_count);
-            
-            const qfamily_indices_array: []const u32 = &.{
-                selected_queue_family_indices.get(.graphics),
-                selected_queue_family_indices.get(.present),
-            };
-            
-            break :swapchain_and_properties .{
-                .swapchain = try dispatch_device.createSwapchainKHR(device, vk.SwapchainCreateInfoKHR {
-                    // .s_type = undefined,
-                    // .p_next = undefined,
-                    .flags = vk.SwapchainCreateFlagsKHR.fromInt(0),
-                    .surface = surface,
-                    .min_image_count = image_count,
-                    .image_format = selected_format.format,
-                    .image_color_space = selected_format.color_space,
-                    .image_extent = selected_swap_extent,
-                    .image_array_layers = 1,
-                    .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
-                    .image_sharing_mode = if (qfamily_indices_array[0] == qfamily_indices_array[1]) .exclusive else .concurrent,
-                    .queue_family_index_count = if (qfamily_indices_array[0] == qfamily_indices_array[1]) 0 else @intCast(u32, qfamily_indices_array.len),
-                    .p_queue_family_indices = qfamily_indices_array.ptr,
-                    .pre_transform = capabilities.current_transform,
-                    .composite_alpha = vk.CompositeAlphaFlagsKHR { .opaque_bit_khr = true },
-                    .present_mode = selected_present_mode,
-                    .clipped = vk.TRUE,
-                    .old_swapchain = .null_handle,
-                }, null),
-                .extent = selected_swap_extent,
-                .format = selected_format,
-                .present_mode = selected_present_mode,
-            };
-        };
-        errdefer dispatch_device.destroySwapchainKHR(device, swapchain_and_properties.swapchain, null);
-        
-        
-        
-        break :basic_vulkan_components .{
-            .instance = instance,
-            .dispatch_instance = dispatch_instance,
-            
-            .surface = surface,
-            
-            .device = device,
-            .dispatch_device = dispatch_device,
-            
-            .queue_graphics = queue_graphics,
-            .queue_present = queue_present,
-            
-            .swapchain = swapchain_and_properties.swapchain,
-            .swapchain_properties = .{
-                .extent = swapchain_and_properties.extent,
-                .format = swapchain_and_properties.format,
-                .present_mode = swapchain_and_properties.present_mode,
-            },
-        };
-    };
-    
-    const instance: vk.Instance = basic_vulkan_components.instance;
-    const dispatch_instance: DispatchInstance = basic_vulkan_components.dispatch_instance;
-    defer dispatch_instance.destroyInstance(instance, null);
-    
-    const surface: vk.SurfaceKHR = basic_vulkan_components.surface;
-    defer dispatch_instance.destroySurfaceKHR(instance, surface, null);
-    
-    const device: vk.Device = basic_vulkan_components.device;
-    const dispatch_device: DispatchDevice = basic_vulkan_components.dispatch_device;
-    defer dispatch_device.destroyDevice(device, null);
-    
-    const queue_graphics: vk.Queue = basic_vulkan_components.queue_graphics;
-    const queue_present: vk.Queue = basic_vulkan_components.queue_present;
-    
-    _ = queue_graphics;
-    _ = queue_present;
-    
-    
-    const swapchain: struct {
-        _heap: []const u8,
-        handle: vk.SwapchainKHR,
-        images: []const vk.Image,
-        views: []const vk.ImageView,
-    } = swapchain_body: {
-        const handle = basic_vulkan_components.swapchain;
-        errdefer dispatch_device.destroySwapchainKHR(device, handle, null);
-        
-        var image_count: u32 = undefined;
-        assert(dispatch_device.getSwapchainImagesKHR(device, handle, &image_count, null) catch unreachable == .success);
-        
-        const view_count: u32 = image_count;
-        
-        const images_bytes_len = image_count * @sizeOf(vk.Image);
-        const views_bytes_len = view_count * @sizeOf(vk.ImageView);
-        
-        const _heap = try allocator_main.allocAdvanced(u8, null, images_bytes_len + views_bytes_len, .at_least);
-        errdefer allocator_main.free(_heap);
-        
-        var local_fba_state = std.heap.FixedBufferAllocator.init(_heap);
-        const local_fba_allocator: *mem.Allocator = &local_fba_state.allocator;
-        
-        const swapchain_images: []const vk.Image = swapchain_images: {
-            const slice = local_fba_allocator.alloc(vk.Image, image_count) catch unreachable;
-            errdefer local_fba_allocator.free(slice);
-            
-            assert(dispatch_device.getSwapchainImagesKHR(device, handle, &image_count, slice.ptr) catch unreachable == .success);
-            assert(slice.len == image_count);
-            
-            break :swapchain_images slice;
-        };
-        errdefer local_fba_allocator.free(swapchain_images);
-        
-        const swapchain_views: []const vk.ImageView = swapchain_views: {
-            const slice = local_fba_allocator.alloc(vk.ImageView, swapchain_images.len) catch unreachable;
-            errdefer local_fba_allocator.free(slice);
-            
-            for (slice) |*image_view, idx| {
-                image_view.* = try dispatch_device.createImageView(device, vk.ImageViewCreateInfo {
-                    // .s_type = undefined,
-                    // .p_next = undefined,
-                    .flags = vk.ImageViewCreateFlags {},
-                    .image = swapchain_images[idx],
-                    .view_type = vk.ImageViewType.@"2d",
-                    .format = basic_vulkan_components.swapchain_properties.format.format,
-                    .components = vk.ComponentMapping {
-                        .r = vk.ComponentSwizzle.identity,
-                        .g = vk.ComponentSwizzle.identity,
-                        .b = vk.ComponentSwizzle.identity,
-                        .a = vk.ComponentSwizzle.identity,
-                    },
-                    .subresource_range = vk.ImageSubresourceRange {
-                        .aspect_mask = vk.ImageAspectFlags { .color_bit = true },
-                        .base_mip_level = 0,
-                        .level_count = 1,
-                        .base_array_layer = 0,
-                        .layer_count = 1,
-                    },
-                }, null);
-            }
-            
-            break :swapchain_views slice;
-        };
-        errdefer {
-            for (swapchain_views) |image_view| {
-                dispatch_device.destroyImageView(device, image_view, null);
-            }
-            local_fba_allocator.free(swapchain_views);
-        }
-        
-        break :swapchain_body .{
-            ._heap = _heap,
+        break :device .{
             .handle = handle,
-            .images = swapchain_images,
-            .views = swapchain_views,
+            .dispatch = device_dispatch,
         };
     };
-    defer {
-        for (swapchain.views) |image_view| {
-            dispatch_device.destroyImageView(device, image_view, null);
-        }
-        allocator_main.free(swapchain._heap);
-        dispatch_device.destroySwapchainKHR(device, swapchain.handle, null);
-    }
+    defer device.dispatch.destroyDevice(device.handle, null);
     
     
     
