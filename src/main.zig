@@ -348,134 +348,209 @@ pub fn main() !void {
         capabilities: vk.SurfaceCapabilitiesKHR,
         format: vk.SurfaceFormatKHR,
         present_mode: vk.PresentModeKHR,
+        
+        _heap: []const u8,
+        images: []const vk.Image,
+        views: []const vk.ImageView,
+        
     } = swapchain: {
-        const local_fba_heap = try allocator_main.alloc(u8, byte_count: {
+        const handle_and_properties: struct {
+            handle: vk.SwapchainKHR,
+            capabilities: vk.SurfaceCapabilitiesKHR,
+            format: vk.SurfaceFormatKHR,
+            present_mode: vk.PresentModeKHR,
             
-            const surface_format_count = surface_format_count: {
-                var count: u32 = undefined;
-                assert(instance.dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, null) catch unreachable == .success);
-                break :surface_format_count count;
-            };
+        } = handle_and_properties: {
+            var local_aa_state = std.heap.ArenaAllocator.init(allocator_main);
+            defer local_aa_state.deinit();
+            const local_aa_allocator: *mem.Allocator = &local_aa_state.allocator;
             
-            const present_mode_count = present_mode_count: {
-                var count: u32 = undefined;
-                assert(instance.dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, null) catch unreachable == .success);
-                break :present_mode_count count;
-            };
-            
-            break :byte_count
-                  (surface_format_count * @sizeOf(vk.SurfaceFormatKHR))
-                + (present_mode_count * @sizeOf(vk.PresentModeKHR))
-            ;
-        });
-        defer allocator_main.free(local_fba_heap);
-        
-        var local_fba_state = std.heap.FixedBufferAllocator.init(local_fba_heap);
-        const local_fba_allocator: *mem.Allocator = &local_fba_state.allocator;
-        
-        const selected_surface_format: vk.SurfaceFormatKHR = selected_surface_format: {
-            const all_surface_formats: []const vk.SurfaceFormatKHR = all_surface_formats: {
-                var count: u32 = undefined;
-                assert(instance.dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, null) catch unreachable == .success);
+            const selected_surface_format: vk.SurfaceFormatKHR = selected_surface_format: {
+                const all_surface_formats: []const vk.SurfaceFormatKHR = all_surface_formats: {
+                    var count: u32 = undefined;
+                    assert(instance.dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, null) catch unreachable == .success);
+                    
+                    const slice = local_aa_allocator.alloc(vk.SurfaceFormatKHR, count) catch unreachable;
+                    errdefer local_aa_allocator.free(slice);
+                    
+                    assert(instance.dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, slice.ptr) catch unreachable == .success);
+                    assert(slice.len == count);
+                    
+                    break :all_surface_formats slice;
+                };
+                defer local_aa_allocator.free(all_surface_formats);
                 
-                const slice = local_fba_allocator.alloc(vk.SurfaceFormatKHR, count) catch unreachable;
-                errdefer local_fba_allocator.free(slice);
-                
-                assert(instance.dispatch.getPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, slice.ptr) catch unreachable == .success);
-                assert(slice.len == count);
-                
-                break :all_surface_formats slice;
-            };
-            defer local_fba_allocator.free(all_surface_formats);
-            
-            if (all_surface_formats.len == 0) return error.NoAvailableVulkanSurfaceFormats;
-            for (all_surface_formats) |surface_format| {
-                if (surface_format.format == .b8g8r8a8_srgb and surface_format.color_space == .srgb_nonlinear_khr) {
-                    break :selected_surface_format surface_format;
+                if (all_surface_formats.len == 0) return error.NoAvailableVulkanSurfaceFormats;
+                for (all_surface_formats) |surface_format| {
+                    if (surface_format.format == .b8g8r8a8_srgb and surface_format.color_space == .srgb_nonlinear_khr) {
+                        break :selected_surface_format surface_format;
+                    }
                 }
-            }
-            
-            break :selected_surface_format all_surface_formats[0];
-        };
-        
-        const selected_present_mode: vk.PresentModeKHR = selected_present_mode: {
-            const all_present_modes: []const vk.PresentModeKHR = all_present_modes: {
-                var count: u32 = undefined;
-                assert(instance.dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, null) catch unreachable == .success);
                 
-                const slice = local_fba_allocator.alloc(vk.PresentModeKHR, count) catch unreachable;
-                errdefer local_fba_allocator.free(slice);
-                
-                assert(instance.dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, slice.ptr) catch unreachable == .success);
-                assert(slice.len == count);
-                
-                break :all_present_modes slice;
+                break :selected_surface_format all_surface_formats[0];
             };
-            defer local_fba_allocator.free(all_present_modes);
             
-            for (all_present_modes) |present_mode| {
-                if (present_mode == .mailbox_khr) {
-                    break :selected_present_mode present_mode;
+            const selected_present_mode: vk.PresentModeKHR = selected_present_mode: {
+                const all_present_modes: []const vk.PresentModeKHR = all_present_modes: {
+                    var count: u32 = undefined;
+                    assert(instance.dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, null) catch unreachable == .success);
+                    
+                    const slice = local_aa_allocator.alloc(vk.PresentModeKHR, count) catch unreachable;
+                    errdefer local_aa_allocator.free(slice);
+                    
+                    assert(instance.dispatch.getPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, slice.ptr) catch unreachable == .success);
+                    assert(slice.len == count);
+                    
+                    break :all_present_modes slice;
+                };
+                defer local_aa_allocator.free(all_present_modes);
+                
+                for (all_present_modes) |present_mode| {
+                    if (present_mode == .mailbox_khr) {
+                        break :selected_present_mode present_mode;
+                    }
                 }
-            }
+                
+                assert(mem.count(vk.PresentModeKHR, all_present_modes, &.{ .fifo_khr }) == 1);
+                break :selected_present_mode .fifo_khr;
+            };
             
-            assert(mem.count(vk.PresentModeKHR, all_present_modes, &.{ .fifo_khr }) == 1);
-            break :selected_present_mode .fifo_khr;
-        };
-        
-        const capabilities: vk.SurfaceCapabilitiesKHR = try instance.dispatch.getPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface);
-        const selected_extent: vk.Extent2D = selected_extent: {
-            if (capabilities.current_extent.width != math.maxInt(u32) and capabilities.current_extent.height != math.maxInt(u32)) {
-                break :selected_extent capabilities.current_extent;
-            }
+            const capabilities: vk.SurfaceCapabilitiesKHR = try instance.dispatch.getPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface);
+            const selected_extent: vk.Extent2D = selected_extent: {
+                if (capabilities.current_extent.width != math.maxInt(u32) and capabilities.current_extent.height != math.maxInt(u32)) {
+                    break :selected_extent capabilities.current_extent;
+                }
+                
+                const fb_size = window.getFramebufferSize() catch unreachable;
+                const clamped_width = math.clamp(fb_size.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width);
+                const clamped_height = math.clamp(fb_size.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height);
+                
+                break :selected_extent .{
+                    .width = @truncate(u32, clamped_width),
+                    .height = @truncate(u32, clamped_height),
+                };
+            };
             
-            const fb_size = window.getFramebufferSize() catch unreachable;
-            const clamped_width = math.clamp(fb_size.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width);
-            const clamped_height = math.clamp(fb_size.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height);
+            const graphics_and_present_queues_equal = queue_family_indices.get(.graphics) == queue_family_indices.get(.present);
+            const handle: vk.SwapchainKHR = try device.dispatch.createSwapchainKHR(device.handle, vk.SwapchainCreateInfoKHR {
+                //.s_type = undefined,
+                //.p_next = undefined,
+                .flags = vk.SwapchainCreateFlagsKHR {},
+                .surface = surface,
+                .min_image_count = min_image_count: {
+                    const min_image_count = capabilities.min_image_count;
+                    const max_image_count = if (capabilities.max_image_count == 0) math.maxInt(u32) else capabilities.max_image_count;
+                    break :min_image_count math.clamp(min_image_count + 1, min_image_count, max_image_count);
+                },
+                
+                .image_format = selected_surface_format.format,
+                .image_color_space = selected_surface_format.color_space,
+                .image_extent = selected_extent,
+                .image_array_layers = 1,
+                .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
+                
+                .image_sharing_mode = if (graphics_and_present_queues_equal) .exclusive else .concurrent,
+                .queue_family_index_count = if (graphics_and_present_queues_equal) 0 else @intCast(u32, queue_family_indices.values.len),
+                .p_queue_family_indices = if (graphics_and_present_queues_equal) mem.span(&[_]u32{}).ptr else &[_]u32{ queue_family_indices.get(.graphics), queue_family_indices.get(.present) },
+                
+                .pre_transform = capabilities.current_transform,
+                .composite_alpha = vk.CompositeAlphaFlagsKHR { .opaque_bit_khr = true },
+                .present_mode = selected_present_mode,
+                .clipped = vk.TRUE,
+                .old_swapchain = .null_handle,
+            }, null);
             
-            break :selected_extent .{
-                .width = @truncate(u32, clamped_width),
-                .height = @truncate(u32, clamped_height),
+            break :handle_and_properties .{
+                .handle = handle,
+                .capabilities = capabilities,
+                .format = selected_surface_format,
+                .present_mode = selected_present_mode,
             };
         };
+        errdefer device.dispatch.destroySwapchainKHR(device.handle, handle_and_properties.handle, null);
         
-        const graphics_and_present_queues_equal = queue_family_indices.get(.graphics) == queue_family_indices.get(.present);
-        const handle: vk.SwapchainKHR = try device.dispatch.createSwapchainKHR(device.handle, vk.SwapchainCreateInfoKHR {
-            //.s_type = undefined,
-            //.p_next = undefined,
-            .flags = vk.SwapchainCreateFlagsKHR {},
-            .surface = surface,
-            .min_image_count = min_image_count: {
-                const min_image_count = capabilities.min_image_count;
-                const max_image_count = if (capabilities.max_image_count == 0) math.maxInt(u32) else capabilities.max_image_count;
-                break :min_image_count math.clamp(min_image_count + 1, min_image_count, max_image_count);
-            },
+        const image_count = image_count: {
+            var count: u32 = undefined;
+            assert(device.dispatch.getSwapchainImagesKHR(device.handle, handle_and_properties.handle, &count, null) catch unreachable == .success);
+            break :image_count count;
+        };
+        const views_count = image_count;
+        
+        const _heap = try allocator_main.alloc(
+            u8,
+            (image_count * @sizeOf(vk.Image)) +
+            (views_count * @sizeOf(vk.ImageView)),
+        );
+        errdefer allocator_main.free(_heap);
+        
+        var local_heap_fba_state = std.heap.FixedBufferAllocator.init(_heap);
+        const local_heap_fba_allocator: *mem.Allocator = &local_heap_fba_state.allocator;
+        
+        const images: []const vk.Image = images: {
+            const slice = local_heap_fba_allocator.alloc(vk.Image, image_count) catch unreachable;
+            errdefer local_heap_fba_allocator.free(slice);
             
-            .image_format = selected_surface_format.format,
-            .image_color_space = selected_surface_format.color_space,
-            .image_extent = selected_extent,
-            .image_array_layers = 1,
-            .image_usage = vk.ImageUsageFlags { .color_attachment_bit = true },
+            var count: u32 = image_count;
+            assert(device.dispatch.getSwapchainImagesKHR(device.handle, handle_and_properties.handle, &count, slice.ptr) catch unreachable == .success);
+            assert(slice.len == count and count == image_count);
             
-            .image_sharing_mode = if (graphics_and_present_queues_equal) .exclusive else .concurrent,
-            .queue_family_index_count = if (graphics_and_present_queues_equal) 0 else @intCast(u32, queue_family_indices.values.len),
-            .p_queue_family_indices = if (graphics_and_present_queues_equal) mem.span(&[_]u32{}).ptr else &queue_family_indices.values,
+            break :images slice;
+        };
+        errdefer local_heap_fba_allocator.free(images);
+        
+        const views: []const vk.ImageView = views: {
+            const slice = local_heap_fba_allocator.alloc(vk.ImageView, views_count) catch unreachable;
+            errdefer local_heap_fba_allocator.free(slice);
             
-            .pre_transform = capabilities.current_transform,
-            .composite_alpha = vk.CompositeAlphaFlagsKHR { .opaque_bit_khr = true },
-            .present_mode = selected_present_mode,
-            .clipped = vk.TRUE,
-            .old_swapchain = .null_handle,
-        }, null);
+            for (slice) |*image_view, idx| {
+                image_view.* = try device.dispatch.createImageView(device.handle, vk.ImageViewCreateInfo {
+                    // .s_type = undefined,
+                    // .p_next = undefined,
+                    .flags = vk.ImageViewCreateFlags {},
+                    .image = images[idx],
+                    
+                    .view_type = .@"2d",
+                    .format = handle_and_properties.format.format,
+                    
+                    .components = vk.ComponentMapping {
+                        .r = vk.ComponentSwizzle.identity,
+                        .g = vk.ComponentSwizzle.identity,
+                        .b = vk.ComponentSwizzle.identity,
+                        .a = vk.ComponentSwizzle.identity,
+                    },
+                    
+                    .subresource_range = vk.ImageSubresourceRange {
+                        .aspect_mask = vk.ImageAspectFlags { .color_bit = true },
+                        .base_mip_level = 0,
+                        .level_count = 1,
+                        .base_array_layer = 0,
+                        .layer_count = 1,
+                    },
+                }, null);
+            }
+            
+            break :views slice;
+        };
+        errdefer local_heap_fba_allocator.free(views);
         
         break :swapchain .{
-            .handle = handle,
-            .capabilities = capabilities,
-            .format = selected_surface_format,
-            .present_mode = selected_present_mode,
+            .handle = handle_and_properties.handle,
+            .capabilities = handle_and_properties.capabilities,
+            .format = handle_and_properties.format,
+            .present_mode = handle_and_properties.present_mode,
+            
+            ._heap = _heap,
+            .images = images,
+            .views = views,
         };
     };
-    defer device.dispatch.destroySwapchainKHR(device.handle, swapchain.handle, null);
+    defer {
+        for (swapchain.views) |image_view| {
+            device.dispatch.destroyImageView(device.handle, image_view, null);
+        }
+        allocator_main.free(swapchain._heap);
+        device.dispatch.destroySwapchainKHR(device.handle, swapchain.handle, null);
+    }
     
     
     
