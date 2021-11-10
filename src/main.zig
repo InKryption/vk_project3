@@ -17,7 +17,7 @@ const print = debug.print;
 const vk = @import("vulkan");
 const glfw = @import("mach-glfw");
 
-
+const shader = @import("shader.zig");
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }) {};
@@ -63,6 +63,8 @@ pub fn main() !void {
         .createSwapchainKHR,
         .destroySwapchainKHR,
         .getSwapchainImagesKHR,
+        .createShaderModule,
+        .destroyShaderModule,
     });
     
     
@@ -100,17 +102,14 @@ pub fn main() !void {
                     break :enabled_layer_names &.{};
                 }
                 
-                var result = std.ArrayList([*:0]const u8).init(&local_aa_state.allocator);
-                errdefer result.deinit();
+                const result = try local_aa_state.allocator.alloc([*:0]const u8, all_instance_layer_properties.len);
+                errdefer local_aa_state.allocator.free(result);
                 
-                try result.ensureTotalCapacityPrecise(all_instance_layer_properties.len);
-                for (all_instance_layer_properties) |instance_layer_properties| {
-                    // const slice_z: [*:0]const u8 = @ptrCast([*:0]const u8, mem.sliceTo(&instance_layer_properties.layer_name, 0).ptr);
-                    const slice_z: [*:0]const u8 = @ptrCast([*:0]const u8, &instance_layer_properties.layer_name);
-                    try result.append(slice_z);
+                for (result) |*result_item, idx| {
+                    result_item.* = @ptrCast([*:0]const u8, &all_instance_layer_properties[idx].layer_name);
                 }
                 
-                break :enabled_layer_names result.toOwnedSlice();
+                break :enabled_layer_names result;
             };
             defer local_aa_state.allocator.free(enabled_layer_names);
             
@@ -551,6 +550,24 @@ pub fn main() !void {
         allocator_main.free(swapchain._heap);
         device.dispatch.destroySwapchainKHR(device.handle, swapchain.handle, null);
     }
+    
+    const triangle_frag: vk.ShaderModule = try device.dispatch.createShaderModule(device.handle, vk.ShaderModuleCreateInfo {
+        // .s_type = undefined,
+        // .p_next = undefined,
+        .flags = vk.ShaderModuleCreateFlags {},
+        .code_size = shader.bin.triangle_frag.len,
+        .p_code = @ptrCast([*]const u32, shader.bin.triangle_frag.ptr),
+    }, null);
+    defer device.dispatch.destroyShaderModule(device.handle, triangle_frag, null);
+    
+    const triangle_vert: vk.ShaderModule = try device.dispatch.createShaderModule(device.handle, vk.ShaderModuleCreateInfo {
+        // .s_type = undefined,
+        // .p_next = undefined,
+        .flags = vk.ShaderModuleCreateFlags {},
+        .code_size = shader.bin.triangle_vert.len,
+        .p_code = @ptrCast([*]const u32, shader.bin.triangle_vert.ptr),
+    }, null);
+    defer device.dispatch.destroyShaderModule(device.handle, triangle_vert, null);
     
     
     
