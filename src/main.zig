@@ -76,8 +76,41 @@ pub fn main() !void {
         
         const handle: vk.Instance = handle: {
             const base_dispatch = try vk.BaseWrapper(comptime enums.values(vk.BaseCommand)).load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
+            
+            const all_instance_layer_properties: []const vk.LayerProperties = all_instance_layer_properties: {
+                if (!debug.runtime_safety) {
+                    break :all_instance_layer_properties &.{};
+                }
+                
+                var count: u32 = undefined;
+                assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
+                
+                const slice = try local_aa_state.allocator.alloc(vk.LayerProperties, count);
+                errdefer local_aa_state.allocator.free(slice);
+                
+                assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
+                assert(slice.len == count);
+                
+                break :all_instance_layer_properties slice;
+            };
+            defer local_aa_state.allocator.free(all_instance_layer_properties);
+            
             const enabled_layer_names: []const [*:0]const u8 = enabled_layer_names: {
-                break :enabled_layer_names &.{};
+                if (!debug.runtime_safety) {
+                    break :enabled_layer_names &.{};
+                }
+                
+                var result = std.ArrayList([*:0]const u8).init(&local_aa_state.allocator);
+                errdefer result.deinit();
+                
+                try result.ensureTotalCapacityPrecise(all_instance_layer_properties.len);
+                for (all_instance_layer_properties) |instance_layer_properties| {
+                    // const slice_z: [*:0]const u8 = @ptrCast([*:0]const u8, mem.sliceTo(&instance_layer_properties.layer_name, 0).ptr);
+                    const slice_z: [*:0]const u8 = @ptrCast([*:0]const u8, &instance_layer_properties.layer_name);
+                    try result.append(slice_z);
+                }
+                
+                break :enabled_layer_names result.toOwnedSlice();
             };
             defer local_aa_state.allocator.free(enabled_layer_names);
             
