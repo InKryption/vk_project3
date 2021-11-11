@@ -75,46 +75,65 @@ pub fn main() !void {
     } = instance: {
         var local_aa_state = std.heap.ArenaAllocator.init(allocator_main);
         defer local_aa_state.deinit();
+        const local_aa_allocator: *mem.Allocator = &local_aa_state.allocator;
         
         const handle: vk.Instance = handle: {
             const base_dispatch = try vk.BaseWrapper(comptime enums.values(vk.BaseCommand)).load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
             
-            const all_instance_layer_properties: []const vk.LayerProperties = all_instance_layer_properties: {
+            const available_instance_layer_properties: []const vk.LayerProperties = available_instance_layer_properties: {
                 if (!debug.runtime_safety) {
-                    break :all_instance_layer_properties &.{};
+                    break :available_instance_layer_properties &.{};
                 }
                 
                 var count: u32 = undefined;
                 assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
                 
-                const slice = try local_aa_state.allocator.alloc(vk.LayerProperties, count);
-                errdefer local_aa_state.allocator.free(slice);
+                const slice = try local_aa_allocator.alloc(vk.LayerProperties, count);
+                errdefer local_aa_allocator.free(slice);
                 
                 assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
                 assert(slice.len == count);
                 
-                break :all_instance_layer_properties slice;
+                break :available_instance_layer_properties slice;
             };
-            defer local_aa_state.allocator.free(all_instance_layer_properties);
+            defer local_aa_allocator.free(available_instance_layer_properties);
+            
+            const desired_instance_layer_names: []const [*:0]const u8 = &.{
+                //"VK_LAYER_NV_optimus",
+                //"VK_MIRILLIS_LAYER",
+                //"VK_LAYER_VALVE_steam_overlay",
+                //"VK_LAYER_VALVE_steam_fossilize",
+                //"VK_LAYER_LUNARG_api_dump",
+                //"VK_LAYER_LUNARG_device_simulation",
+                //"VK_LAYER_LUNARG_gfxreconstruct",
+                //"VK_LAYER_KHRONOS_synchronization2",
+                //"VK_LAYER_KHRONOS_validation",
+                //"VK_LAYER_LUNARG_monitor",
+                //"VK_LAYER_LUNARG_screenshot",
+            };
             
             const enabled_layer_names: []const [*:0]const u8 = enabled_layer_names: {
                 if (!debug.runtime_safety) {
                     break :enabled_layer_names &.{};
                 }
                 
-                const result = try local_aa_state.allocator.alloc([*:0]const u8, all_instance_layer_properties.len);
-                errdefer local_aa_state.allocator.free(result);
+                var result = try std.ArrayList([*:0]const u8).initCapacity(local_aa_allocator, available_instance_layer_properties.len);
+                errdefer result.deinit();
                 
-                for (result) |*result_item, idx| {
-                    result_item.* = @ptrCast([*:0]const u8, &all_instance_layer_properties[idx].layer_name);
+                outer: for (available_instance_layer_properties) |*instance_layer_property| {
+                    inner: for (desired_instance_layer_names) |desired_layer_name| {
+                        const found_match = mem.eql(u8, mem.sliceTo(&instance_layer_property.layer_name, 0), mem.span(desired_layer_name));
+                        if (found_match) break :inner;
+                    } else continue :outer;
+                    result.appendAssumeCapacity(@ptrCast([*:0]const u8, &instance_layer_property.layer_name));
                 }
                 
-                break :enabled_layer_names result;
+                break :enabled_layer_names result.toOwnedSlice();
             };
-            defer local_aa_state.allocator.free(enabled_layer_names);
+            defer local_aa_allocator.free(enabled_layer_names);
             
             const enabled_extension_names: []const [*:0]const u8 = enabled_extension_names: {
-                var result = std.ArrayList([*:0]const u8).init(&local_aa_state.allocator);
+                var result = std.ArrayList([*:0]const u8).init(local_aa_allocator);
                 errdefer result.deinit();
                 
                 try result.appendSlice(glfw_extensions: {
