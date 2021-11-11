@@ -35,8 +35,21 @@ pub fn main() !void {
     defer window.destroy();
     
     
+
+    const DispatchDevice = vk.DeviceWrapper(&[_]vk.DeviceCommand {
+        .destroyDevice,
+        .getDeviceQueue,
+        .createImageView,
+        .destroyImageView,
+        .createSwapchainKHR,
+        .destroySwapchainKHR,
+        .getSwapchainImagesKHR,
+        .createShaderModule,
+        .destroyShaderModule,
+    });
     
-    const DispatchInstance = vk.InstanceWrapper(&[_]vk.InstanceCommand {
+    
+    const Instance = InstanceAndDispatch(&.{
         .destroyInstance,
         .enumeratePhysicalDevices,
         .getDeviceProcAddr,
@@ -54,31 +67,27 @@ pub fn main() !void {
         .getPhysicalDeviceSurfacePresentModesKHR,
         .getPhysicalDeviceSurfaceCapabilitiesKHR,
     });
-
-    const DispatchDevice = vk.DeviceWrapper(&[_]vk.DeviceCommand {
-        .destroyDevice,
-        .getDeviceQueue,
-        .createImageView,
-        .destroyImageView,
-        .createSwapchainKHR,
-        .destroySwapchainKHR,
-        .getSwapchainImagesKHR,
-        .createShaderModule,
-        .destroyShaderModule,
-    });
-    
-    
-    
-    const instance: struct {
-        handle: vk.Instance,
-        dispatch: DispatchInstance,
-    } = instance: {
+    const instance: Instance = instance: {
         var local_aa_state = std.heap.ArenaAllocator.init(allocator_main);
         defer local_aa_state.deinit();
         const local_aa_allocator: *mem.Allocator = &local_aa_state.allocator;
         
-        const handle: vk.Instance = handle: {
+        const handle: Instance.Handle = handle: {
             const base_dispatch = try vk.BaseWrapper(comptime enums.values(vk.BaseCommand)).load(@ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
+            
+            const desired_instance_layer_names: []const []const u8 = &.{
+                //"VK_LAYER_NV_optimus",
+                //"VK_MIRILLIS_LAYER",
+                //"VK_LAYER_VALVE_steam_overlay",
+                //"VK_LAYER_VALVE_steam_fossilize",
+                //"VK_LAYER_LUNARG_api_dump",
+                //"VK_LAYER_LUNARG_device_simulation",
+                //"VK_LAYER_LUNARG_gfxreconstruct",
+                //"VK_LAYER_KHRONOS_synchronization2",
+                //"VK_LAYER_KHRONOS_validation",
+                //"VK_LAYER_LUNARG_monitor",
+                //"VK_LAYER_LUNARG_screenshot",
+            };
             
             const available_instance_layer_properties: []const vk.LayerProperties = available_instance_layer_properties: {
                 if (!debug.runtime_safety) {
@@ -98,20 +107,6 @@ pub fn main() !void {
             };
             defer local_aa_allocator.free(available_instance_layer_properties);
             
-            const desired_instance_layer_names: []const [*:0]const u8 = &.{
-                //"VK_LAYER_NV_optimus",
-                //"VK_MIRILLIS_LAYER",
-                //"VK_LAYER_VALVE_steam_overlay",
-                //"VK_LAYER_VALVE_steam_fossilize",
-                //"VK_LAYER_LUNARG_api_dump",
-                //"VK_LAYER_LUNARG_device_simulation",
-                //"VK_LAYER_LUNARG_gfxreconstruct",
-                //"VK_LAYER_KHRONOS_synchronization2",
-                //"VK_LAYER_KHRONOS_validation",
-                //"VK_LAYER_LUNARG_monitor",
-                //"VK_LAYER_LUNARG_screenshot",
-            };
-            
             const enabled_layer_names: []const [*:0]const u8 = enabled_layer_names: {
                 if (!debug.runtime_safety) {
                     break :enabled_layer_names &.{};
@@ -120,12 +115,14 @@ pub fn main() !void {
                 var result = try std.ArrayList([*:0]const u8).initCapacity(local_aa_allocator, available_instance_layer_properties.len);
                 errdefer result.deinit();
                 
-                outer: for (available_instance_layer_properties) |*instance_layer_property| {
-                    inner: for (desired_instance_layer_names) |desired_layer_name| {
-                        const found_match = mem.eql(u8, mem.sliceTo(&instance_layer_property.layer_name, 0), mem.span(desired_layer_name));
-                        if (found_match) break :inner;
-                    } else continue :outer;
-                    result.appendAssumeCapacity(@ptrCast([*:0]const u8, &instance_layer_property.layer_name));
+                outer: for (desired_instance_layer_names) |desired_layer_name| {
+                    for (available_instance_layer_properties) |*instance_layer_properties| {
+                        const found_match = mem.eql(u8, mem.span(@ptrCast([*:0]const u8, &instance_layer_properties.layer_name)), desired_layer_name);
+                        if (found_match) {
+                            result.appendAssumeCapacity(desired_layer_name.ptr);
+                            continue :outer;
+                        }
+                    }
                 }
                 
                 break :enabled_layer_names result.toOwnedSlice();
@@ -170,14 +167,14 @@ pub fn main() !void {
             mbd.destroyInstance(handle, null);
         }
         
-        const instance_dispatch: DispatchInstance = try DispatchInstance.load(handle, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
+        const instance_dispatch: Instance.Dispatch = try Instance.Dispatch.load(handle, @ptrCast(vk.PfnGetInstanceProcAddr, glfw.getInstanceProcAddress));
         
         break :instance .{
             .handle = handle,
             .dispatch = instance_dispatch,
         };
     };
-    defer instance.dispatch.destroyInstance(instance.handle, null);
+    defer instance.deinit(null);
     
     
     
@@ -361,6 +358,29 @@ pub fn main() !void {
     
     
     
+    const calculateSwapchainExtent = struct {
+        fn calculateSwapchainExtent(
+            params: struct {
+                current_extent: vk.Extent2D,
+                min_image_extent: vk.Extent2D,
+                max_image_extent: vk.Extent2D,
+                framebuffer_size: glfw.Window.Size,
+            },
+        ) vk.Extent2D {
+            if (params.current_extent.width != math.maxInt(u32) and params.current_extent.height != math.maxInt(u32)) {
+                break :selected_extent params.current_extent;
+            }
+            
+            const clamped_width = math.clamp(params.framebuffer_size.width, params.min_image_extent.width, params.max_image_extent.width);
+            const clamped_height = math.clamp(params.framebuffer_size.height, params.min_image_extent.height, params.max_image_extent.height);
+            
+            return .{
+                .width = @truncate(u32, clamped_width),
+                .height = @truncate(u32, clamped_height),
+            };
+        }
+    }.calculateSwapchainExtent;
+    
     const swapchain: struct {
         handle: vk.SwapchainKHR,
         capabilities: vk.SurfaceCapabilitiesKHR,
@@ -370,7 +390,6 @@ pub fn main() !void {
         _heap: []const u8,
         images: []const vk.Image,
         views: []const vk.ImageView,
-        
     } = swapchain: {
         const handle_and_properties: struct {
             handle: vk.SwapchainKHR,
@@ -434,20 +453,12 @@ pub fn main() !void {
             };
             
             const capabilities: vk.SurfaceCapabilitiesKHR = try instance.dispatch.getPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface);
-            const selected_extent: vk.Extent2D = selected_extent: {
-                if (capabilities.current_extent.width != math.maxInt(u32) and capabilities.current_extent.height != math.maxInt(u32)) {
-                    break :selected_extent capabilities.current_extent;
-                }
-                
-                const fb_size = window.getFramebufferSize() catch unreachable;
-                const clamped_width = math.clamp(fb_size.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width);
-                const clamped_height = math.clamp(fb_size.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height);
-                
-                break :selected_extent .{
-                    .width = @truncate(u32, clamped_width),
-                    .height = @truncate(u32, clamped_height),
-                };
-            };
+            const selected_extent: vk.Extent2D = calculateSwapchainExtent(.{
+                .current_extent = capabilities.current_extent,
+                .min_image_extent = capabilities.min_image_extent,
+                .max_image_extent = capabilities.max_image_extent,
+                .framebuffer_size = try window.getFramebufferSize(),
+            });
             
             const graphics_and_present_queues_equal = queue_family_indices.get(.graphics) == queue_family_indices.get(.present);
             const handle: vk.SwapchainKHR = try device.dispatch.createSwapchainKHR(device.handle, vk.SwapchainCreateInfoKHR {
@@ -590,6 +601,132 @@ pub fn main() !void {
     
     
     
+    {
+        const pipeline_shader_stage_create_info_triangle_vert = vk.PipelineShaderStageCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineShaderStageCreateFlags {},
+            .stage = vk.ShaderStageFlags { .vertex_bit = true },
+            .module = triangle_vert,
+            .p_name = "main",
+            .p_specialization_info = @as(?*const vk.SpecializationInfo, null),
+        };
+        
+        const pipeline_shader_stage_create_info_triangle_frag = vk.PipelineShaderStageCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineShaderStageCreateFlags {},
+            .stage = vk.ShaderStageFlags { .fragment_bit = true },
+            .module = triangle_frag,
+            .p_name = "main",
+            .p_specialization_info = @as(?*const vk.SpecializationInfo, null),
+        };
+        
+        
+        
+        const shader_stage_create_infos: []const vk.PipelineShaderStageCreateInfo = &.{
+            pipeline_shader_stage_create_info_triangle_vert,
+            pipeline_shader_stage_create_info_triangle_frag,
+        };
+        
+        
+        
+        const pipeline_vertex_input_state_create_info = vk.PipelineVertexInputStateCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineVertexInputStateCreateFlags {},
+            
+            .vertex_binding_description_count = 0,
+            .p_vertex_binding_descriptions = &[_]vk.VertexInputBindingDescription {},
+            
+            .vertex_attribute_description_count = 0,
+            .p_vertex_attribute_descriptions = &[_]vk.VertexInputAttributeDescription {},
+        };
+        
+        
+        
+        const pipeline_input_assembly_state_create_info = vk.PipelineInputAssemblyStateCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineInputAssemblyStateCreateFlags {},
+            .topology = vk.PrimitiveTopology.triangle_list,
+            .primitive_restart_enable = vk.FALSE,
+        };
+        
+        
+        
+        const swapchain_extent: vk.Extent2D = calculateSwapchainExtent(.{
+            .current_extent = swapchain.capabilities.current_extent,
+            .min_image_extent = swapchain.capabilities.min_image_extent,
+            .max_image_extent = swapchain.capabilities.max_image_extent,
+            .framebuffer_size = window.getFramebufferSize() catch unreachable,
+        });
+        const viewports: []const vk.Viewport = &[_]vk.Viewport {
+            .{
+                .x = 0.0,
+                .y = 0.0,
+                .width = @intToFloat(f32, swapchain_extent.width),
+                .height = @intToFloat(f32, swapchain_extent.height),
+                .min_depth = 0.0,
+                .max_depth = 1.0,
+            },
+        };
+        const scissors: []const vk.Rect2D = &[_]vk.Rect2D {
+            .{
+                .offset = vk.Offset2D {
+                    .x = 0,
+                    .y = 0,
+                },
+                .extent = swapchain_extent,
+            },
+        };
+        
+        assert(viewports.len == scissors.len);
+        const viewport_state_create_info = vk.PipelineViewportStateCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineViewportStateCreateFlags {},
+            
+            .viewport_count = @intCast(u32, viewports.len),
+            .p_viewports = viewports.ptr,
+            
+            .scissor_count = @intCast(u32, scissors.len),
+            .p_scissors = scissors.ptr,
+        };
+        
+        
+        
+        const pipeline_rasterization_state_create_info = vk.PipelineRasterizationStateCreateInfo {
+            // .s_type = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineRasterizationStateCreateFlags {},
+            .depth_clamp_enable = vk.FALSE,
+            .rasterizer_discard_enable = vk.FALSE,
+            .polygon_mode = vk.PolygonMode.fill,
+            .cull_mode = vk.CullModeFlags { .back_bit = true },
+            .front_face = vk.FrontFace.clockwise,
+            .depth_bias_enable = vk.FALSE,
+            .depth_bias_constant_factor = 0.0,
+            .depth_bias_clamp = 0.0,
+            .depth_bias_slope_factor = 0.0,
+            .line_width = 1.0,
+        };
+        
+        const pipeline_multisample_state_create_info = vk.PipelineMultisampleStateCreateInfo {
+            // .sType = undefined,
+            // .p_next = undefined,
+            .flags = vk.PipelineMultisampleStateCreateFlags {},
+            .rasterization_samples = vk.SampleCountFlags { .@"1_bit" = true },
+            .sample_shading_enable = vk.FALSE,
+            .min_sample_shading = 1.0,
+            .p_sample_mask = null,
+            .alpha_to_coverage_enable = vk.FALSE,
+            .alpha_to_one_enable = vk.FALSE,
+        };
+    }
+    
+    
+    
     var timer = try time.Timer.start();
     while (!window.shouldClose()) {
         glfw.pollEvents() catch continue;
@@ -599,7 +736,23 @@ pub fn main() !void {
     }
 }
 
-
+pub fn InstanceAndDispatch(comptime cmds: []const vk.InstanceCommand) type {
+    return struct {
+        const Self = @This();
+        handle: Handle,
+        dispatch: Dispatch,
+        
+        pub const Handle = vk.Instance;
+        pub const Dispatch = vk.InstanceWrapper(cmds);
+        
+        pub fn deinit(self: Self, p_allocator: ?*const vk.AllocationCallbacks) {
+            if (comptime mem.count(vk.InstanceCommand, cmds, &.{ .destroyInstance }) == 1) {
+                self.dispatch.destroyInstance(self.handle, p_allocator);
+            }
+            unreachable;
+        }
+    };
+}
 
 fn snakecaseToCamelCaseBufferSize(snake_case: []const u8) usize {
     return snake_case.len - mem.count(u8, snake_case, "_");
